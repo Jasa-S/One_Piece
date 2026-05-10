@@ -43,7 +43,9 @@ def _check_products(config: Config, state: State) -> None:
                 continue
 
             if result is None:
+                # Unknown result: increment streak; expires cached state after threshold
                 log.warning("Skipping %s — all retries exhausted.", product.name)
+                state.record_product_unknown(product.url)
                 continue
 
             previously_in_stock = state.was_in_stock(product.url)
@@ -132,11 +134,13 @@ def _check_categories(config: Config, state: State) -> None:
             if not current:
                 continue
 
-            log.info("%s: checking stock on %d URLs…", category.name, len(current))
+            log.info("%s: checking stock on %d URLs\u2026", category.name, len(current))
             stock_results = _check_category_stocks(category, set(current), config.defaults)
 
             for url, result in stock_results.items():
                 if result is None:
+                    # Unknown: increment streak; expires cached state after threshold
+                    state.record_category_url_unknown(category.url, url)
                     continue
                 title = current.get(url, url)
                 previously = state.was_category_url_in_stock(category.url, url)
@@ -158,7 +162,6 @@ def run_once(config: Config, state: State) -> None:
         cat_fut = pool.submit(_check_categories, config, state)
         prod_fut.result()
         cat_fut.result()
-    # Stamp the time of the last completed check cycle
     state.save(last_checked_at=datetime.now(timezone.utc).isoformat())
 
 
@@ -209,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
         from .notifier import _post
         _post(config.webhook_url, {
             "username": "TCG Stock Notifier",
-            "content": "Test ping — the notifier is set up and working!",
+            "content": "Test ping \u2014 the notifier is set up and working!",
             "embeds": [{"title": "Connection test", "description": "Discord notifications are working.", "color": 0x3498DB}],
         })
         log.info("Test ping sent.")
