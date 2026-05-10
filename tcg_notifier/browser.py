@@ -73,7 +73,7 @@ def close_shared_browser() -> None:
 
 
 @contextmanager
- def _browser_page(url: str) -> Generator:
+def _browser_page(url: str) -> Generator:
     """Open a new page in the shared browser, choosing locale/UA by URL."""
     naver = is_naver_smartstore(url)
     locale = "ko-KR" if naver else "de-DE"
@@ -88,11 +88,9 @@ def close_shared_browser() -> None:
         locale=locale,
         user_agent=ua,
         extra_http_headers={"Accept-Language": accept_lang},
-        # Mask automation signals
         java_script_enabled=True,
     )
     page = ctx.new_page()
-    # Hide navigator.webdriver
     page.add_init_script(
         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
     )
@@ -113,49 +111,103 @@ def close_shared_browser() -> None:
 # Naver Smartstore helpers
 # ---------------------------------------------------------------------------
 
+# Naver Smartstore uses hashed CSS class names that change with every deploy.
+# Instead we rely on stable data-* attributes, ARIA roles, and Korean text
+# content which are far less likely to change.
+_NAVER_OOS_SELECTORS = [
+    # data-nclick attribute contains 'soldout' on the sold-out badge
+    "[data-nclick*='soldout']",
+    "[data-nclick*='SoldOut']",
+    # aria-disabled buy button = sold out
+    "button[aria-disabled='true'][class*='btn']",
+    # common class fragments still used across deploys
+    "[class*='soldOut']",
+    "[class*='sold-out']",
+    "[class*='outOfStock']",
+    "[class*='SoldOut']",
+    ".sold_out",
+    "#SOLD_OUT",
+]
+
+_NAVER_IN_STOCK_SELECTORS = [
+    # The purchase / cart button when enabled
+    "button[class*='btn'][class*='buy']:not([disabled]):not([aria-disabled='true'])",
+    "button[class*='purchase']:not([disabled])",
+    "button[class*='cart']:not([disabled])",
+    # Naver's own data-nclick tags for buy actions
+    "[data-nclick*='buy']:not([disabled])",
+    "[data-nclick*='addCart']:not([disabled])",
+]
+
+
 def _check_naver(page, product: Product) -> tuple[bool | None, str]:
-    """Naver-specific stock check: wait for the buy button / sold-out badge.
+    """Naver-specific stock check.
 
-    Naver renders stock state via React after initial load, so we wait for
-    a known selector rather than relying on domcontentloaded.
+    Strategy:
+    1. Wait for networkidle so React has fully rendered the stock state.
+    2. Check DOM selectors for sold-out / in-stock indicators (reliable).
+    3. Fall back to Korean phrase matching in body text.
+    4. If nothing found, assume out of stock.
     """
-    # These selectors cover current Smartstore layout (2024-2025)
-    BUY_SELECTORS = [
-        "button._2-uvQuRWK5",       # primary buy button class
-        "button[class*='buyButton']",
-        "button[class*='_buy']",
-        "[class*='soldOut']",
-        "[class*='sold-out']",
-        "[class*='outOfStock']",
-        ".sold_out",
-        "#SOLD_OUT",
-    ]
-    wait_selector = ", ".join(BUY_SELECTORS)
+    # Wait for React to finish rendering stock state.
+    # networkidle = no network requests for 500 ms — safe signal that
+    # the dynamic content (including stock badges) has been injected.
     try:
-        page.wait_for_selector(wait_selector, timeout=10_000)
+        page.wait_for_load_state("networkidle", timeout=15_000)
     except Exception:
-        log.debug("Naver: stock selector not found within timeout, falling back to text")
+        log.debug("Naver: networkidle timeout, proceeding with current DOM")
 
-    text = page.inner_text("body").lower()
+    # --- 1. DOM selector checks (most reliable) ---
 
-    # Check OOS phrases first (more specific)
+    # Check sold-out indicators first
+    for sel in _NAVER_OOS_SELECTORS:
+        try:
+            el = page.query_selector(sel)
+            if el and el.is_visible():
+                return False, f"sold-out selector matched: {sel!r}"
+        except Exception:
+            pass
+
+    # Check in-stock / buy button indicators
+    for sel in _NAVER_IN_STOCK_SELECTORS:
+        try:
+            el = page.query_selector(sel)
+            if el and el.is_visible() and el.is_enabled():
+                return True, f"in-stock selector matched: {sel!r}"
+        except Exception:
+            pass
+
+    # --- 2. Korean text phrase matching (fallback) ---
+    try:
+        text = page.inner_text("body").lower()
+    except Exception:
+        return None, "failed to read body text"
+
+    # OOS phrases checked before in-stock (more specific signal)
     found_oos = next((s for s in product.out_of_stock_text if s.lower() in text), None)
     if found_oos:
         return False, f"oos phrase matched: {found_oos!r}"
 
-    # Check explicit in-stock phrases
     found_in = next((s for s in product.in_stock_text if s.lower() in text), None)
     if found_in:
         return True, f"in-stock phrase matched: {found_in!r}"
 
-    # Fallback: look for the buy button being enabled
-    for sel in ["button[class*='buyButton']", "button._2-uvQuRWK5"]:
-        try:
-            btn = page.query_selector(sel)
-            if btn and btn.is_enabled():
-                return True, "buy button present and enabled"
-        except Exception:
-            pass
+    # --- 3. JSON-LD / script tag stock check (deep fallback) ---
+    # Naver embeds structured data in <script type="application/ld+json">
+    # which includes "availability" before React hydration completes.
+    try:
+        scripts = page.query_selector_all("script[type='application/ld+json']")
+        for script in scripts:
+            try:
+                content = script.inner_html().lower()
+                if "instock" in content or "in_stock" in content:
+                    return True, "JSON-LD availability: InStock"
+                if "outofstock" in content or "out_of_stock" in content or "soldout" in content:
+                    return False, "JSON-LD availability: OutOfStock"
+            except Exception:
+                pass
+    except Exception:
+        pass
 
     return False, "no stock indicator found (assumed out of stock)"
 
@@ -238,8 +290,6 @@ def check_product_browser(product: Product) -> tuple[bool | None, str]:
 
             text = page.inner_text("body").lower()
 
-            # In-stock takes priority over OOS when both phrases appear
-            # (e.g. page shows one variant available, another sold out)
             found_in = next((s for s in product.in_stock_text if s.lower() in text), None)
             if found_in:
                 return True, f"in-stock phrase matched: {found_in!r}"
