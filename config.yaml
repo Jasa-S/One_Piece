@@ -5,5 +5,132 @@ defaults:
   check_interval_seconds: 300
   jitter_seconds: 60
   request_timeout_seconds: 20
-products: []
-categories: []
+products:
+- name: One Piece EB03 Display
+  shop: pokegeodude.shop
+  url: https://pokegeodude.shop/One-Piece-Heroines-Edition-Extra-Booster-Display-EB03-Japanisch
+  out_of_stock_text:
+  - Ausverkauft
+  - Nicht verfügbar
+  - Vergriffen
+  - Derzeit nicht verfügbar
+  - Sold out
+  - Out of stock
+  - 품절
+  - 일시품절
+  in_stock_text:
+  - In den Warenkorb
+  - In den Einkaufswagen
+  - Auf Lager
+  - Lieferbar
+  - Sofort lieferbar
+  - Add to cart
+  - 구매하기
+  - 장바구니
+- name: Wachsendes Chaos TTB
+  shop: Gate to the Games
+  url: https://www.gate-to-the-games.de/Pokemon-Karten-Mega-Entwicklung-Wachsendes-Chaos-Top-Trainer-Box-deutsch
+  out_of_stock_text:
+  - Ausverkauft
+  - Nicht verfügbar
+  - Vergriffen
+  - Derzeit nicht verfügbar
+  - Sold out
+  - Out of stock
+  - 품절
+  - 일시품절
+  in_stock_text:
+  - In den Warenkorb
+  - In den Einkaufswagen
+  - Auf Lager
+  - Lieferbar
+  - Sofort lieferbar
+  - Add to cart
+  - 구매하기
+  - 장바구니
+- name: Erste Partner
+  shop: Gate to the Games
+  url: https://www.gate-to-the-games.de/Pokemon-Erste-Partner-Kollektion-deutsch
+  out_of_stock_text:
+  - Ausverkauft
+  - Nicht verfügbar
+  - Vergriffen
+  - Derzeit nicht verfügbar
+  - Sold out
+  - Out of stock
+  - 품절
+  - 일시품절
+  in_stock_text:
+  - In den Warenkorb
+  - In den Einkaufswagen
+  - Auf Lager
+  - Lieferbar
+  - Sofort lieferbar
+  - Add to cart
+  - 구매하기
+  - 장바구니
+- name: OPK-12
+  shop: smartstore.naver.com
+  url: https://smartstore.naver.com/yugioh625/products/13443386511?nl-query=사제의%20연&nl-au=5cbc53ec77564515a4b940f052c7e3cb#REVIEW
+  out_of_stock_text:
+  - Ausverkauft
+  - Nicht verfügbar
+  - Vergriffen
+  - Derzeit nicht verfügbar
+  - Sold out
+  - Out of stock
+  - 품절
+  - 일시품절
+  in_stock_text:
+  - In den Warenkorb
+  - In den Einkaufswagen
+  - Auf Lager
+  - Lieferbar
+  - Sofort lieferbar
+  - Add to cart
+  - 구매하기
+  - 장바구니
+  use_browser: true
+- name: Yellow Duck Box
+  shop: brand.naver.com
+  url: https://brand.naver.com/pokemon/products/13408935563
+  out_of_stock_text:
+  - Ausverkauft
+  - Nicht verfügbar
+  - Vergriffen
+  - Derzeit nicht verfügbar
+  - Sold out
+  - Out of stock
+  - 품절
+  - 일시품절
+  in_stock_text:
+  - In den Warenkorb
+  - In den Einkaufswagen
+  - Auf Lager
+  - Lieferbar
+  - Sofort lieferbar
+  - Add to cart
+  - 구매하기
+  - 장바구니
+  use_browser: true
+categories:
+- name: Saturn Tin Boxen
+  shop: Saturn
+  url: https://www.saturn.de/de/brand/pokemon-sammelkartenspiel/tin-boxen
+  link_pattern: /de/product/
+  use_browser: true
+- name: Saturn Kollektionen
+  shop: Saturn
+  url: https://www.saturn.de/de/promo-list/ent_brand_loa_pokemon_grid_kollektionen
+  link_pattern: /de/product/
+  use_browser: true
+- name: Saturn Premium Kollektionen
+  shop: Saturn
+  url: https://www.saturn.de/de/promo-list/ent_brand_loa_pokemon_grid_premium_kollektionen
+  link_pattern: /de/product/
+  use_browser: true
+- name: Saturn Top Trainer Boxen
+  shop: Saturn
+  url: https://www.saturn.de/de/brand/pokemon-sammelkartenspiel/top-trainer-boxen
+  link_pattern: /de/product/
+  use_browser: true
