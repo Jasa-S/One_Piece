@@ -17,7 +17,7 @@ from .browser import close_shared_browser
 from .category import fetch_category
 from .checker import check_product, CheckResult
 from .config import Config, Defaults, Product, load_config
-from .notifier import send_in_stock_alert, send_new_listing_alert, send_category_in_stock_alert
+from .notifier import send_in_stock_alert, send_new_listing_alert, send_category_in_stock_alert, send_blocked_alert
 from .state import State
 
 log = logging.getLogger("tcg_notifier")
@@ -43,8 +43,15 @@ def _check_products(config: Config, state: State) -> None:
                 continue
 
             if result is None:
-                log.warning("Skipping %s — all retries exhausted.", product.name)
+                log.warning("Skipping %s — all retries exhausted (site blocked or unreadable).", product.name)
                 state.record_product_unknown(product.url)
+                send_blocked_alert(
+                    config.webhook_url,
+                    name=product.name,
+                    url=product.url,
+                    reason="All retries exhausted — the site is blocking the bot or the page could not be read. Stock state has NOT been updated.",
+                    shop=product.shop,
+                )
                 continue
 
             previously_in_stock = state.was_in_stock(product.url)
@@ -133,12 +140,20 @@ def _check_categories(config: Config, state: State) -> None:
             if not current:
                 continue
 
-            log.info("%s: checking stock on %d URLs\u2026", category.name, len(current))
+            log.info("%s: checking stock on %d URLs…", category.name, len(current))
             stock_results = _check_category_stocks(category, set(current), config.defaults)
 
             for url, result in stock_results.items():
                 if result is None:
+                    log.warning("Skipping category URL %s — site blocked or unreadable.", url)
                     state.record_category_url_unknown(category.url, url)
+                    send_blocked_alert(
+                        config.webhook_url,
+                        name=current.get(url, url),
+                        url=url,
+                        reason=f"All retries exhausted in category \u201c{category.name}\u201d — the site is blocking the bot or the page could not be read. Stock state has NOT been updated.",
+                        shop=category.shop,
+                    )
                     continue
                 title = current.get(url, url)
                 previously = state.was_category_url_in_stock(category.url, url)
@@ -208,7 +223,6 @@ def main(argv: list[str] | None = None) -> int:
     config_path = Path(args.config)
     state_path = Path(args.state)
 
-    # --reset-url: wipe the cached entry so the next run re-checks from scratch
     if args.reset_url:
         if not state_path.exists():
             log.error("State file not found at %s.", state_path)

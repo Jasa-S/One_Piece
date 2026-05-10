@@ -49,7 +49,7 @@ def send_category_in_stock_alert(
     embed = {
         "color": 0x57F287,
         "author": {
-            "name": "\u2705  In Stock — Category Alert",
+            "name": "\u2705  In Stock \u2014 Category Alert",
         },
         "title": product_title[:256],
         "url": product_url,
@@ -77,7 +77,7 @@ def send_new_listing_alert(
 ) -> None:
     shop_line = f"`{category.shop}`" if category.shop else "unknown shop"
     embed = {
-        "color": 0x5865F2,  # Discord blurple — new/informational
+        "color": 0x5865F2,  # Discord blurple
         "author": {
             "name": "\U0001f195  New Listing Detected",
         },
@@ -94,6 +94,41 @@ def send_new_listing_alert(
     payload = {
         "username": "TCG Stock Notifier",
         "content": f"@here new listing spotted: **{product_title[:200]}**",
+        "embeds": [embed],
+    }
+    _post(webhook_url, payload)
+
+
+def send_blocked_alert(
+    webhook_url: str,
+    name: str,
+    url: str,
+    reason: str,
+    shop: str = "",
+) -> None:
+    """Warn on Discord that a product page could not be read (blocked / unreadable).
+
+    Does NOT use @here — this is informational, not an in-stock event.
+    Stock state is NOT changed; the last known state is preserved.
+    """
+    shop_line = f"`{shop}`" if shop else "unknown shop"
+    embed = {
+        "color": 0xFEE75C,  # yellow — warning, not error
+        "author": {
+            "name": "\u26a0\ufe0f  Site Blocked / Unreadable",
+        },
+        "title": name[:256],
+        "url": url,
+        "fields": [
+            {"name": "\U0001f3ea  Shop", "value": shop_line, "inline": True},
+            {"name": "\U0001f517  Link", "value": f"[Open product page]({url})", "inline": True},
+            {"name": "\u2139\ufe0f  Reason", "value": reason[:1024], "inline": False},
+        ],
+        "footer": {"text": "TCG Stock Notifier — stock state unchanged"},
+        "timestamp": _timestamp(),
+    }
+    payload = {
+        "username": "TCG Stock Notifier",
         "embeds": [embed],
     }
     _post(webhook_url, payload)
