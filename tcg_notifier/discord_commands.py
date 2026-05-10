@@ -194,20 +194,37 @@ def _cmd_list(data: dict, stock_state: dict) -> str:
     products_state = stock_state.get("products") or {}
     categories_state = stock_state.get("categories") or {}
 
-    for p in (data.get("products") or []):
-        url = p.get("url", "")
-        st = products_state.get(url) or {}
-        if "in_stock" in st:
-            status = "🟢 in stock" if st["in_stock"] else "🔴 sold out"
-        else:
-            status = "⚪ unknown (not checked yet)"
-        lines.append(f"📦 **{p.get('name','?')}** ({p.get('shop','?')}) — {status}")
-    for c in (data.get("categories") or []):
-        url = c.get("url", "")
-        cs = categories_state.get(url) or {}
-        count = len(cs.get("known_urls") or [])
-        suffix = f"{count} products tracked" if cs.get("initialized") else "not yet baselined"
-        lines.append(f"🗂️ **{c.get('name','?')}** ({c.get('shop','?')}) — {suffix}")
+    products = data.get("products") or []
+    if products:
+        available = sold_out = unknown = 0
+        product_lines = []
+        for p in products:
+            st = products_state.get(p.get("url", "")) or {}
+            if "in_stock" not in st:
+                status, unknown = "⚪ unknown", unknown + 1
+            elif st["in_stock"]:
+                status, available = "🟢 in stock", available + 1
+            else:
+                status, sold_out = "🔴 sold out", sold_out + 1
+            product_lines.append(f"  📦 **{p.get('name','?')}** ({p.get('shop','?')}) — {status}")
+        parts = []
+        if available: parts.append(f"🟢 {available} available")
+        if sold_out:  parts.append(f"🔴 {sold_out} sold out")
+        if unknown:   parts.append(f"⚪ {unknown} unknown")
+        lines.append(f"**Products ({len(products)} tracked — {' · '.join(parts) or 'none checked yet'})**")
+        lines.extend(product_lines)
+
+    categories = data.get("categories") or []
+    if categories:
+        if lines:
+            lines.append("")
+        lines.append(f"**Categories ({len(categories)} tracked)**")
+        for c in categories:
+            cs = categories_state.get(c.get("url", "")) or {}
+            count = len(cs.get("known_urls") or [])
+            suffix = f"{count} products found" if cs.get("initialized") else "not yet baselined"
+            lines.append(f"  🗂️ **{c.get('name','?')}** ({c.get('shop','?')}) — {suffix}")
+
     return "\n".join(lines) if lines else "Nothing is being tracked yet."
 
 
