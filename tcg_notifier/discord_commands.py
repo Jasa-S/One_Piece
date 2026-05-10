@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import requests
 import yaml
@@ -30,7 +31,8 @@ HELP_TEXT = """\
 Single entry:
 `!add product <url> <name>`
 `!add category <url> <name>`
-`!add category <url> /link_pattern/ <name>`
+`!add category <url> <product_example_url> <name>` ← auto-detects pattern
+`!add category <url> /link_pattern/ <name>` ← explicit pattern
 
 Multiple entries in one message (block format):
 ```
@@ -40,7 +42,7 @@ https://shop.de/product/2 Pokemon 151 TTB
 ```
 ```
 !add category
-https://shop.de/collections/op One Piece @ JK
+https://shop.de/collections/op https://shop.de/products/op09 One Piece @ JK
 https://shop.de/collections/pokemon /de/product/ Pokemon @ Shop
 ```
 
@@ -127,6 +129,35 @@ def _cmd_add_product(data: dict, url: str, name: str) -> str:
 
     browser_note = " — ⚠️ site needs headless browser, set automatically." if info["needs_browser"] else " — plain HTTP."
     return f"✅ Added product **{name}**\nProbe: {info['note']}{browser_note}"
+
+
+def _derive_link_pattern(category_url: str, product_url: str) -> str | None:
+    cat_segs = [s for s in urlparse(category_url).path.strip("/").split("/") if s]
+    prod_path = urlparse(product_url).path
+    prod_segs = [s for s in prod_path.strip("/").split("/") if s]
+
+    # Find first diverging path segment
+    diverge_idx = len(cat_segs)
+    for i, (cs, ps) in enumerate(zip(cat_segs, prod_segs)):
+        if cs != ps:
+            diverge_idx = i
+            break
+
+    if diverge_idx < len(prod_segs):
+        diverging_seg = prod_segs[diverge_idx]
+        # If diverging segment looks like a generic path component (not a product slug/ID),
+        # use it as the pattern prefix
+        if not re.search(r'\d', diverging_seg) and len(diverging_seg) <= 20:
+            prefix = "/" + "/".join(prod_segs[:diverge_idx + 1]) + "/"
+            return prefix
+
+    # Fall back to file extension (e.g. .html)
+    prod_filename = prod_path.split("/")[-1]
+    if "." in prod_filename:
+        ext = prod_filename.rsplit(".", 1)[-1]
+        return rf"\.{ext}$"
+
+    return None
 
 
 def _cmd_add_category(data: dict, url: str, name: str, link_pattern_override: str | None = None) -> str:
@@ -267,9 +298,15 @@ def _dispatch(data: dict, stock_state: dict, parts: tuple[str, ...]) -> tuple[st
         if sub == "product":
             return _cmd_add_product(data, url, parts[3]), True
         if sub == "category":
-            # Optional pattern: if parts[3] starts with "/" it's a link pattern, rest is name
             name_field = parts[3]
-            if name_field.startswith("/"):
+            if name_field.startswith("http"):
+                # Product example URL provided — derive pattern automatically
+                pp = name_field.split(None, 1)
+                example_url = pp[0]
+                name = pp[1] if len(pp) > 1 else example_url
+                link_pattern = _derive_link_pattern(url, example_url)
+            elif name_field.startswith("/"):
+                # Explicit pattern provided
                 pp = name_field.split(None, 1)
                 link_pattern = pp[0]
                 name = pp[1] if len(pp) > 1 else name_field
