@@ -16,6 +16,15 @@ class Product:
 
 
 @dataclass
+class Category:
+    name: str
+    url: str
+    shop: str = ""
+    link_selector: str = "a[href]"
+    link_pattern: str | None = None  # optional regex matched against absolute URL
+
+
+@dataclass
 class Defaults:
     check_interval_seconds: int = 300
     jitter_seconds: int = 60
@@ -31,6 +40,7 @@ class Config:
     webhook_url: str
     defaults: Defaults
     products: list[Product]
+    categories: list[Category]
 
 
 def load_config(path: Path) -> Config:
@@ -45,11 +55,7 @@ def load_config(path: Path) -> Config:
 
     defaults = Defaults(**(data.get("defaults") or {}))
 
-    raw_products = data.get("products") or []
-    if not raw_products:
-        raise ValueError(f"No products configured in {path}.")
-
-    products = [Product(**p) for p in raw_products]
+    products = [Product(**p) for p in (data.get("products") or [])]
     for p in products:
         if not p.in_stock_text and not p.out_of_stock_text:
             raise ValueError(
@@ -57,4 +63,14 @@ def load_config(path: Path) -> Config:
                 "in_stock_text or out_of_stock_text."
             )
 
-    return Config(webhook_url=webhook_url, defaults=defaults, products=products)
+    categories = [Category(**c) for c in (data.get("categories") or [])]
+
+    if not products and not categories:
+        raise ValueError(f"No products or categories configured in {path}.")
+
+    return Config(
+        webhook_url=webhook_url,
+        defaults=defaults,
+        products=products,
+        categories=categories,
+    )

@@ -76,3 +76,67 @@ products:
     url: "https://www.amazon.de/dp/REPLACE_ME"
     out_of_stock_text: ["Derzeit nicht verfügbar", "Currently unavailable"]
     in_stock_text: ["In den Einkaufswagen", "Jetzt kaufen"]
+
+# ---------------------------------------------------------------------------
+# CATEGORIES — get notified when a NEW product appears on a category/listing
+# page (e.g. a fresh One Piece set drops at JK Entertainment).
+#
+# How it works:
+#   - On the first run, all currently-listed products are saved as the
+#     baseline; you get NO alerts (avoids a flood of "new" items on day 1).
+#   - On every subsequent run, any product link that wasn't there before
+#     fires a Discord alert.
+#
+# Configuration:
+#   url             : the category / search / collection URL
+#   link_selector   : CSS selector that picks product anchors. Defaults to
+#                     `a[href]` (every link). Combine with `link_pattern`.
+#   link_pattern    : regex applied to the absolute URL. Strongly recommended
+#                     so you only catch product links, not nav/footer links.
+#
+# Quick guide for common shop platforms:
+#   - Shopify shops (PokéGeoDude, JK Entertainment, Spielraum Wien, many
+#     others): product URLs contain `/products/`.
+#   - Media Markt / Saturn: product URLs contain `/product/`.
+#   - Smyths Toys: `/p/` in product URLs.
+#   - Gate to the Games: typically a Shopware shop with descriptive slugs.
+#
+# Tip: open the category in your browser, right-click a product card,
+# "Inspect", and copy the anchor's class — you can put that in link_selector
+# (e.g. `a.product-card`) for tighter matching.
+# ---------------------------------------------------------------------------
+categories:
+  - name: "One Piece sealed @ JK Entertainment"
+    shop: "JK Entertainment"
+    url: "https://jk-entertainment.biz/_REPLACE_ME_category"
+    link_pattern: "/products/"
+
+  - name: "Pokemon sealed @ PokéGeoDude"
+    shop: "PokéGeoDude"
+    url: "https://pokegeodude.de/collections/_REPLACE_ME"
+    link_pattern: "/products/"
+
+  - name: "TCG @ Media Markt"
+    shop: "Media Markt"
+    url: "https://www.mediamarkt.de/de/category/_REPLACE_ME"
+    link_pattern: "/product/"
+
+  - name: "TCG @ Saturn"
+    shop: "Saturn"
+    url: "https://www.saturn.de/de/category/_REPLACE_ME"
+    link_pattern: "/product/"
+
+  - name: "TCG @ Gate to the Games"
+    shop: "Gate to the Games"
+    url: "https://www.gate-to-the-games.de/_REPLACE_ME_category"
+    link_selector: "a[href]"
+
+  - name: "TCG @ Spielraum Wien"
+    shop: "Spielraum Wien"
+    url: "https://spielraum.wien/collections/_REPLACE_ME"
+    link_pattern: "/products/"
+
+  - name: "Sammelkarten @ Smyths Toys"
+    shop: "Smyths Toys"
+    url: "https://www.smythstoys.com/de/de-de/_REPLACE_ME_category"
+    link_pattern: "/p/"

@@ -7,15 +7,16 @@ import sys
 import time
 from pathlib import Path
 
+from .category import fetch_category
 from .checker import check_product
 from .config import Config, load_config
-from .notifier import send_discord_alert
+from .notifier import send_in_stock_alert, send_new_listing_alert
 from .state import State
 
 log = logging.getLogger("tcg_notifier")
 
 
-def run_once(config: Config, state: State) -> None:
+def _check_products(config: Config, state: State) -> None:
     for product in config.products:
         result = check_product(product, config.defaults)
         if result is None:
@@ -31,10 +32,50 @@ def run_once(config: Config, state: State) -> None:
         )
 
         if result.in_stock and not previously_in_stock:
-            log.info("Sending Discord alert for %s", product.name)
-            send_discord_alert(config.webhook_url, product, result.detail)
+            log.info("Sending in-stock alert for %s", product.name)
+            send_in_stock_alert(config.webhook_url, product, result.detail)
 
-        state.update(product.url, result.in_stock)
+        state.update_product(product.url, result.in_stock)
+
+
+def _check_categories(config: Config, state: State) -> None:
+    for category in config.categories:
+        found = fetch_category(category, config.defaults)
+        if found is None:
+            continue
+
+        current = {fp.url: fp.title for fp in found}
+        known = state.known_urls(category.url)
+        new_urls = sorted(set(current) - known)
+
+        log.info(
+            "%s [%s] %d listings, %d previously known, %d new",
+            category.name,
+            category.shop,
+            len(current),
+            len(known),
+            len(new_urls),
+        )
+
+        if state.is_category_initialized(category.url):
+            for url in new_urls:
+                log.info("Sending new-listing alert for %s", url)
+                send_new_listing_alert(
+                    config.webhook_url, category, url, current[url]
+                )
+        elif new_urls:
+            log.info(
+                "%s: first run for this category — saving %d items as baseline.",
+                category.name,
+                len(current),
+            )
+
+        state.update_category(category.url, set(current))
+
+
+def run_once(config: Config, state: State) -> None:
+    _check_products(config, state)
+    _check_categories(config, state)
 
 
 def run_loop(config_path: Path, state_path: Path) -> None:
@@ -59,7 +100,10 @@ def run_loop(config_path: Path, state_path: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m tcg_notifier",
-        description="Notifies a Discord webhook when configured TCG products come in stock.",
+        description=(
+            "Watch TCG product pages and category pages; "
+            "alert a Discord webhook when items come in stock or new listings appear."
+        ),
     )
     parser.add_argument("--config", default="config.yaml", help="Path to config YAML.")
     parser.add_argument("--state", default="state.json", help="Path to state file.")
