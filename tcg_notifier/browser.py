@@ -409,7 +409,16 @@ _NAVER_IN_STOCK_SELECTORS = [
 
 
 def _check_naver(page, product: Product) -> tuple[bool | None, str]:
-    """Naver Smartstore-specific stock check."""
+    """Naver Smartstore-specific stock check.
+
+    Order of precedence:
+    1. OOS CSS selectors — conclusive if matched.
+    2. In-stock CSS selectors — conclusive if matched.
+    3. Body text OOS / in-stock phrases.
+    4. JSON-LD structured data.
+    5. __NEXT_DATA__ soldOut field — structured fallback.
+    6. Default to in-stock (no OOS evidence found).
+    """
     try:
         page.wait_for_load_state("networkidle", timeout=15_000)
     except Exception:
@@ -459,7 +468,26 @@ def _check_naver(page, product: Product) -> tuple[bool | None, str]:
     except Exception:
         pass
 
-    return False, "no stock indicator found (assumed out of stock)"
+    # Structured fallback: try __NEXT_DATA__ (same approach as brand.naver.com).
+    try:
+        next_data_raw = page.eval_on_selector("#__NEXT_DATA__", "el => el.textContent")
+        if next_data_raw:
+            data = json.loads(next_data_raw)
+            sold_out = _extract_sold_out_targeted(data)
+            if sold_out is True:
+                return False, "__NEXT_DATA__ soldOut=true (smartstore fallback)"
+            if sold_out is False:
+                return True, "__NEXT_DATA__ soldOut=false (smartstore fallback)"
+    except Exception:
+        pass
+
+    # No OOS evidence found — default to in-stock to avoid false OOS alerts.
+    # This is consistent with the brand.naver.com fallback behaviour.
+    log.debug(
+        "Naver smartstore: no conclusive stock signal for %s — defaulting to in-stock",
+        product.url,
+    )
+    return True, "no OOS signal found (defaulting to in-stock)"
 
 
 # ---------------------------------------------------------------------------
