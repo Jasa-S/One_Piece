@@ -30,6 +30,7 @@ HELP_TEXT = """\
 Single entry:
 `!add product <url> <name>`
 `!add category <url> <name>`
+`!add category <url> /link_pattern/ <name>`
 
 Multiple entries in one message (block format):
 ```
@@ -40,15 +41,17 @@ https://shop.de/product/2 Pokemon 151 TTB
 ```
 !add category
 https://shop.de/collections/op One Piece @ JK
-https://shop.de/collections/pokemon Pokemon @ Shop
+https://shop.de/collections/pokemon /de/product/ Pokemon @ Shop
 ```
 
 Other commands:
 `!list` — show everything currently tracked
 `!remove <name>` — stop tracking (partial name match)
+`!setpattern <name> /pattern/` — set or update link pattern for a category
 `!help` — show this message
 
-The bot auto-detects whether a site needs a headless browser."""
+The bot auto-detects whether a site needs a headless browser.
+Link pattern is optional — auto-detected when possible. Provide one (e.g. `/de/product/`) to override."""
 
 
 # ---------------------------------------------------------------------------
@@ -126,26 +129,31 @@ def _cmd_add_product(data: dict, url: str, name: str) -> str:
     return f"✅ Added product **{name}**\nProbe: {info['note']}{browser_note}"
 
 
-def _cmd_add_category(data: dict, url: str, name: str) -> str:
+def _cmd_add_category(data: dict, url: str, name: str, link_pattern_override: str | None = None) -> str:
     categories: list = data.setdefault("categories", []) or []
     if any(c.get("url") == url for c in categories):
         return f"Already tracking `{url}`."
 
     info = probe(url)
+    effective_pattern = link_pattern_override or info["link_pattern"]
     entry: dict = {
         "name": name,
         "shop": info["shop"],
         "url": url,
     }
-    if info["link_pattern"]:
-        entry["link_pattern"] = info["link_pattern"]
+    if effective_pattern:
+        entry["link_pattern"] = effective_pattern
     if info["needs_browser"]:
         entry["use_browser"] = True
 
     categories.append(entry)
     data["categories"] = categories
 
-    pattern_note = f" Link pattern: `{info['link_pattern']}`." if info["link_pattern"] else " No link pattern detected — add one manually in config.yaml if needed."
+    if effective_pattern:
+        source = "provided" if link_pattern_override else "auto-detected"
+        pattern_note = f" Link pattern: `{effective_pattern}` ({source})."
+    else:
+        pattern_note = " No link pattern detected — send `!setpattern {name} /pattern/` to add one."
     browser_note = " ⚠️ site needs headless browser, set automatically." if info["needs_browser"] else ""
     return f"✅ Added category **{name}**\nProbe: {info['note']}.{pattern_note}{browser_note}"
 
@@ -172,6 +180,18 @@ def _cmd_remove(data: dict, query: str) -> str:
     if removed:
         return "✅ Removed: " + ", ".join(f"**{n}**" for n in removed)
     return f"Nothing found matching `{query}`."
+
+
+def _cmd_setpattern(data: dict, query: str, pattern: str) -> str:
+    q = query.lower()
+    updated: list[str] = []
+    for c in (data.get("categories") or []):
+        if q in c.get("name", "").lower():
+            c["link_pattern"] = pattern
+            updated.append(c["name"])
+    if updated:
+        return "✅ Pattern set to `" + pattern + "` for: " + ", ".join(f"**{n}**" for n in updated)
+    return f"No category found matching `{query}`."
 
 
 # ---------------------------------------------------------------------------
@@ -230,12 +250,24 @@ def _dispatch(data: dict, parts: tuple[str, ...]) -> tuple[str, bool]:
     if cmd == "!add":
         if len(parts) < 4:
             return "Usage: `!add product <url> <name>` or `!add category <url> <name>`", False
-        sub, url, name = parts[1].lower(), parts[2], parts[3]
+        sub, url = parts[1].lower(), parts[2]
         if sub == "product":
-            return _cmd_add_product(data, url, name), True
+            return _cmd_add_product(data, url, parts[3]), True
         if sub == "category":
-            return _cmd_add_category(data, url, name), True
+            # Optional pattern: if parts[3] starts with "/" it's a link pattern, rest is name
+            name_field = parts[3]
+            if name_field.startswith("/"):
+                pp = name_field.split(None, 1)
+                link_pattern = pp[0]
+                name = pp[1] if len(pp) > 1 else name_field
+            else:
+                link_pattern, name = None, name_field
+            return _cmd_add_category(data, url, name, link_pattern), True
         return f"Unknown type `{sub}`. Use `product` or `category`.", False
+    if cmd == "!setpattern":
+        if len(parts) < 3:
+            return "Usage: `!setpattern <name> /pattern/`", False
+        return _cmd_setpattern(data, " ".join(parts[1:-1]), parts[-1]), True
 
     return f"Unknown command `{cmd}`. Type `!help` for usage.", False
 
