@@ -211,19 +211,24 @@ def _live_check_all(data: dict, defaults: Defaults) -> dict:
         url = p.get("url", "")
         if not url:
             continue
+        # use_browser defaults to True — every modern retail/Naver site needs it.
+        # Only skip the browser if the config explicitly sets use_browser: false.
+        use_browser = p.get("use_browser", True) or is_naver_smartstore(url)
         stub = Product(
             name=p.get("name", url),
             url=url,
             shop=p.get("shop", ""),
             in_stock_text=p.get("in_stock_text") or list(DEFAULT_IN_STOCK),
             out_of_stock_text=p.get("out_of_stock_text") or list(DEFAULT_OOS),
-            use_browser=p.get("use_browser", False) or is_naver_smartstore(url),
+            use_browser=use_browser,
         )
         tasks.append(("product", url, stub))
 
     for c in (data.get("categories") or []):
         cat_url = c.get("url", "")
         known = data.get("_state_known_urls", {}).get(cat_url, [])
+        # Same fix: default use_browser to True for category product URLs.
+        use_browser_cat = c.get("use_browser", True)
         for url in known:
             stub = Product(
                 name=url,
@@ -231,7 +236,7 @@ def _live_check_all(data: dict, defaults: Defaults) -> dict:
                 shop=c.get("shop", ""),
                 in_stock_text=list(DEFAULT_IN_STOCK),
                 out_of_stock_text=list(DEFAULT_OOS),
-                use_browser=c.get("use_browser", False) or is_naver_smartstore(url),
+                use_browser=use_browser_cat or is_naver_smartstore(url),
             )
             tasks.append(("category", cat_url, stub))
 
@@ -254,6 +259,11 @@ def _live_check_all(data: dict, defaults: Defaults) -> dict:
                 log.warning("Live check failed: %s", e)
                 continue
             if result is None:
+                # Site blocked / unreadable — mark explicitly so !list can show it
+                if kind == "product":
+                    results["products"][url] = {"in_stock": None}
+                else:
+                    results["categories"].setdefault(key, {"stock": {}})["stock"][url] = None
                 continue
             if kind == "product":
                 results["products"][url] = {"in_stock": result.in_stock}
@@ -360,12 +370,16 @@ def _cmd_list(data: dict, live_stock: dict) -> str:
             url = p.get("url", "")
             name = p.get("name", "?")
             st = products_stock.get(url)
-            if st is None or "in_stock" not in st:
+            if st is None:
+                # URL not in live results at all (wasn't checked)
                 status = "\u26aa unknown"
-            elif st["in_stock"]:
+            elif st.get("in_stock") is True:
                 status = f"\U0001f7e2 in stock  \u2192 [buy]({url})"
-            else:
+            elif st.get("in_stock") is False:
                 status = "\U0001f534 sold out"
+            else:
+                # in_stock=None means the site was blocked during this live check
+                status = "\u26aa site blocked \u2014 could not read page"
             shop = p.get("shop", "")
             shop_str = f"  `{shop}`" if shop else ""
             lines.append(f"**{name}**{shop_str}\n{status}")
@@ -387,22 +401,23 @@ def _cmd_list(data: dict, live_stock: dict) -> str:
             total = len(known_urls)
 
             if total == 0:
-                lines.append(f"**{name}**{shop_str}\n\u26aa not yet baselined")
+                lines.append(f"**{name}**{shop_str}\n\u26aa waiting for first scan")
                 continue
 
-            in_s  = sum(1 for v in stock.values() if v is True)
-            out_s = sum(1 for v in stock.values() if v is False)
+            in_s   = sum(1 for v in stock.values() if v is True)
+            out_s  = sum(1 for v in stock.values() if v is False)
+            blocked = sum(1 for v in stock.values() if v is None)
 
             summary_parts = []
-            if in_s:  summary_parts.append(f"\U0001f7e2 {in_s} in stock")
-            if out_s: summary_parts.append(f"\U0001f534 {out_s} sold out")
+            if in_s:    summary_parts.append(f"\U0001f7e2 {in_s} in stock")
+            if out_s:   summary_parts.append(f"\U0001f534 {out_s} sold out")
+            if blocked: summary_parts.append(f"\u26aa {blocked} blocked")
             summary = "  ".join(summary_parts) or "\U0001f534 all sold out"
 
             lines.append(f"**{name}**{shop_str}  \u2014  {total} listings  \u00b7  {summary}")
 
             in_stock_urls = [u for u, v in stock.items() if v is True]
             for url in in_stock_urls[:8]:
-                # Show a short label: last path segment, max 60 chars
                 label = urlparse(url).path.rstrip("/").split("/")[-1].replace("-", " ")[:60] or url
                 lines.append(f"  \U0001f7e2 [{label}]({url})")
             if len(in_stock_urls) > 8:
@@ -494,7 +509,7 @@ def _cmd_debug(url: str, defaults: Defaults | None) -> str:
                 else:
                     in_stock, detail = False, "no phrase matched"
 
-            stock_emoji = "\U0001f7e2" if in_stock else "\U0001f534"
+            stock_emoji = "\U0001f7e2" if in_stock else ("\U0001f534" if in_stock is False else "\u26aa")
             lines.append(f"**Result:** {stock_emoji} `in_stock={in_stock}` \u2014 `{detail}`")
 
     except Exception as e:
