@@ -7,7 +7,7 @@ import threading
 import time
 from contextlib import contextmanager
 from typing import Generator
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 from .category import FoundProduct, _normalize
 from .config import Category, DEFAULT_USER_AGENT, NAVER_USER_AGENT, Product, is_naver_smartstore
@@ -29,10 +29,61 @@ _NAVER_QUEUE_RETRIES = 4
 _NAVER_QUEUE_RETRY_DELAY = 8
 
 # ---------------------------------------------------------------------------
-# Cookie consent selectors — tried in order, first match is clicked.
-# Covers: Cookiebot, OneTrust, Usercentrics, Borlabs, custom German shops.
-# Deliberately targets "accept all" / "alle akzeptieren" buttons only —
-# we never interact with the real page UI.
+# Borlabs Cookie — localStorage injection
+# ---------------------------------------------------------------------------
+# Borlabs reads a JSON blob from localStorage key "borlabs-cookie" on every
+# page load. If the key is absent (fresh context), the consent overlay blocks
+# the page. We inject a pre-accepted payload before the real navigation so the
+# overlay never appears.
+#
+# Strategy: navigate to the origin's blank page first (so localStorage is
+# scoped to the correct origin), inject the key, then navigate to the real URL.
+
+_BORLABS_PAYLOAD = json.dumps({
+    "consents": {
+        "statistics": True,
+        "marketing": True,
+        "preferences": True,
+        "essential": True,
+    },
+    "domainPath": "/",
+    "expiry": 365,
+    "uid": "borlabs-bypass",
+    "version": "3",
+})
+
+
+def _is_borlabs_site(url: str) -> bool:
+    """Heuristic: gate-to-the-games uses Borlabs; extend as needed."""
+    host = urlsplit(url).netloc.lower()
+    # Add more hostnames here if other shops also use Borlabs.
+    return "gate-to-the-games.de" in host
+
+
+def _inject_borlabs_consent(page, url: str) -> None:
+    """Navigate to the site root, inject Borlabs localStorage, then go to url."""
+    from urllib.parse import urlsplit
+    parts = urlsplit(url)
+    origin = f"{parts.scheme}://{parts.netloc}"
+    try:
+        # Load origin root (fast — just enough for localStorage to be writable)
+        page.goto(origin, wait_until="domcontentloaded", timeout=15_000)
+    except Exception:
+        pass
+    try:
+        page.evaluate(
+            "(payload) => { localStorage.setItem('borlabs-cookie', payload); }",
+            _BORLABS_PAYLOAD,
+        )
+        log.debug("Borlabs consent injected into localStorage for %s", origin)
+    except Exception as exc:
+        log.debug("Borlabs localStorage injection failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Generic cookie consent click-through
+# Covers: Cookiebot, OneTrust, Usercentrics, and custom German shops.
+# Used as a fallback after localStorage injection for any remaining overlay.
 # ---------------------------------------------------------------------------
 _CONSENT_SELECTORS = [
     # Cookiebot
@@ -41,20 +92,17 @@ _CONSENT_SELECTORS = [
     # OneTrust
     "#onetrust-accept-btn-handler",
     "button.onetrust-close-btn-handler",
-    # Usercentrics (button with data-testid)
+    # Usercentrics
     "button[data-testid='uc-accept-all-button']",
-    # Generic German retail "Alle akzeptieren" / "Akzeptieren"
+    # Generic German retail
     "button[class*='accept-all']",
     "button[class*='acceptAll']",
     "button[class*='cookie-accept']",
     "button[id*='accept-all']",
     "button[id*='acceptAll']",
     "a[id*='accept-all']",
-    # Text-based fallback: match any button whose visible text is one of these
-    # (handled separately in _dismiss_consent via page.get_by_role)
 ]
 
-# Visible button texts to click as a last resort (case-insensitive substring match)
 _CONSENT_BUTTON_TEXTS = [
     "Alle akzeptieren",
     "Alle Cookies akzeptieren",
@@ -70,8 +118,7 @@ _CONSENT_BUTTON_TEXTS = [
 
 
 def _dismiss_consent(page) -> None:
-    """Best-effort cookie consent dismissal. Silent on failure."""
-    # 1. Try known CSS selectors first
+    """Best-effort cookie consent dismissal via click. Silent on failure."""
     for sel in _CONSENT_SELECTORS:
         try:
             el = page.query_selector(sel)
@@ -83,7 +130,6 @@ def _dismiss_consent(page) -> None:
         except Exception:
             pass
 
-    # 2. Try visible button text matches
     for text in _CONSENT_BUTTON_TEXTS:
         try:
             btn = page.get_by_role("button", name=re.compile(re.escape(text), re.IGNORECASE)).first
@@ -215,18 +261,7 @@ def _fetch_next_data(page, url: str) -> str | None:
 
 
 def _check_naver_brand(page, product: Product) -> tuple[bool | None, str]:
-    """Stock check for brand.naver.com.
-
-    Retries loading the page up to _NAVER_QUEUE_RETRIES times when the
-    Naver queue/waiting-room page is detected (no #__NEXT_DATA__). Only
-    returns None once all retries are exhausted.
-
-    Priority order once a real product page is confirmed:
-      1. Body text: sold-out Korean phrases.
-      2. __NEXT_DATA__ JSON: targeted path only.
-      3. Body text: in-stock phrases.
-      4. Fallback to generic Naver DOM/text check.
-    """
+    """Stock check for brand.naver.com."""
     next_data_raw: str | None = _fetch_next_data(page, product.url)
 
     attempt = 0
@@ -422,6 +457,28 @@ def _check_naver(page, product: Product) -> tuple[bool | None, str]:
 
 
 # ---------------------------------------------------------------------------
+# Shared consent + navigation helper
+# ---------------------------------------------------------------------------
+
+def _navigate_with_consent(page, url: str) -> None:
+    """Navigate to url, handling consent banners for known frameworks.
+
+    For Borlabs sites: inject localStorage consent first, then navigate.
+    For all sites: attempt click-through dismissal after load.
+    """
+    if _is_borlabs_site(url):
+        _inject_borlabs_consent(page, url)
+
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=20_000)
+    except Exception:
+        log.warning("domcontentloaded timed out for %s, using partial content", url)
+
+    # Click-through fallback for any remaining overlay
+    _dismiss_consent(page)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -431,12 +488,7 @@ def fetch_category_browser(category: Category) -> list[FoundProduct] | None:
 
     try:
         with _browser_page(category.url) as page:
-            try:
-                page.goto(category.url, wait_until="domcontentloaded", timeout=20_000)
-            except Exception:
-                log.warning("domcontentloaded timed out for %s, using partial content", category.url)
-
-            _dismiss_consent(page)
+            _navigate_with_consent(page, category.url)
 
             prev_height = 0
             for i in range(6):
@@ -485,22 +537,14 @@ def fetch_category_browser(category: Category) -> list[FoundProduct] | None:
 
 def check_product_browser(product: Product) -> tuple[bool | None, str]:
     """Check stock on a JS-rendered product page using the shared browser."""
-    from urllib.parse import urlsplit
     host = urlsplit(product.url).netloc.lower()
 
     try:
         with _browser_page(product.url) as page:
             if "brand.naver.com" in host:
-                # Navigation + consent dismissal handled inside _check_naver_brand
                 return _check_naver_brand(page, product)
 
-            try:
-                page.goto(product.url, wait_until="domcontentloaded", timeout=20_000)
-            except Exception:
-                log.warning("domcontentloaded timed out for %s, using partial content", product.url)
-
-            # Dismiss cookie consent before reading any page content
-            _dismiss_consent(page)
+            _navigate_with_consent(page, product.url)
 
             if is_naver_smartstore(product.url):
                 return _check_naver(page, product)
