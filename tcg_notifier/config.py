@@ -7,12 +7,27 @@ from pathlib import Path
 import yaml
 
 DEFAULT_OOS = [
+    # German
     "Ausverkauft", "Nicht verfügbar", "Vergriffen",
-    "Derzeit nicht verfügbar", "Sold out", "Out of stock",
+    "Derzeit nicht verfügbar", "Aktuell nicht verfügbar",
+    "Vorübergehend nicht verfügbar", "Nicht auf Lager",
+    "Nicht lieferbar", "Nicht bestellbar", "Nicht vorrätig",
+    # English
+    "Sold out", "Out of stock", "Currently unavailable",
+    "Temporarily unavailable", "No longer available", "Item unavailable",
+    # Korean
+    "품절", "일시품절", "재고없음", "재고 없음",
 ]
 DEFAULT_IN_STOCK = [
+    # German
     "In den Warenkorb", "In den Einkaufswagen",
-    "Auf Lager", "Lieferbar", "Sofort lieferbar", "Add to cart",
+    "Auf Lager", "Lieferbar", "Sofort lieferbar",
+    "Jetzt kaufen", "Zum Warenkorb",
+    # English
+    "Add to cart", "Add to bag", "Add to basket",
+    "Buy now", "In Stock", "In stock",
+    # Korean
+    "구매하기", "장바구니 담기", "바로구매",
 ]
 
 

@@ -99,6 +99,7 @@ def check_product_browser(product: Product) -> tuple[bool | None, str]:
     """Check stock on a JS-rendered product page.
 
     Returns (in_stock, detail). in_stock is None on fetch failure.
+    Detection priority: schema.org JSON-LD > microdata > phrase matching.
     """
     sync_playwright = _get_playwright()
     if sync_playwright is None:
@@ -113,18 +114,18 @@ def check_product_browser(product: Product) -> tuple[bool | None, str]:
             except Exception:
                 log.warning("networkidle timed out for %s, using partial content", product.url)
 
-            text = page.inner_text("body").lower()
+            html = page.content()
             browser.close()
 
-        found_oos = next((s for s in product.out_of_stock_text if s.lower() in text), None)
-        if found_oos:
-            return False, f"out-of-stock phrase matched: {found_oos!r}"
+        from bs4 import BeautifulSoup
+        from .checker import detect_availability
+        soup = BeautifulSoup(html, "html.parser")
+        in_stock, detail = detect_availability(soup, product.in_stock_text, product.out_of_stock_text)
+        if in_stock is not None:
+            return in_stock, detail
 
-        found_in = next((s for s in product.in_stock_text if s.lower() in text), None)
-        if found_in:
-            return True, f"in-stock phrase matched: {found_in!r}"
-
-        return False, "no configured phrase matched (assumed out of stock)"
+        log.debug("No availability signal for %s — assuming out of stock", product.url)
+        return False, "no signal matched (assumed out of stock)"
 
     except Exception as e:
         log.warning("Browser product check failed for %s: %s", product.url, e)
