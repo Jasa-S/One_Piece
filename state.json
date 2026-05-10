@@ -11,14 +11,8 @@
     },
     "https://www.saturn.de/de/brand/pokemon-sammelkartenspiel/top-trainer-boxen": {
       "initialized": true,
-      "known_urls": [
-        "https://www.saturn.de/de/product/_the-pokemon-company-int-41079-pokemon-kp09-top-trainer-box-sammelkarten-2974734.html",
-        "https://www.saturn.de/de/product/_the-pokemon-company-int-pkm-kp065-top-trainer-box-de-sammelkartenspiel-2936729.html"
-      ],
-      "stock": {
-        "https://www.saturn.de/de/product/_the-pokemon-company-int-41079-pokemon-kp09-top-trainer-box-sammelkarten-2974734.html": false,
-        "https://www.saturn.de/de/product/_the-pokemon-company-int-pkm-kp065-top-trainer-box-de-sammelkartenspiel-2936729.html": false
-      }
+      "known_urls": [],
+      "stock": {}
     },
     "https://www.saturn.de/de/promo-list/ent_brand_dpl_pokemon_tcg_sat?query=ent_brand_dpl_pokemon_tcg_sat&brand=POKEMON&marketplace=SATURN&page=2": {
       "initialized": true,
@@ -151,7 +145,7 @@
       ]
     }
   },
-  "last_checked_at": "2026-05-10T22:29:00.241680+00:00",
+  "last_checked_at": "2026-05-10T22:33:45.279366+00:00",
   "products": {
     "https://brand.naver.com/pokemon/products/12747160892": {
       "in_stock": true
