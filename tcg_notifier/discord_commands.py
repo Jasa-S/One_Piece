@@ -158,12 +158,25 @@ def _cmd_add_category(data: dict, url: str, name: str, link_pattern_override: st
     return f"✅ Added category **{name}**\nProbe: {info['note']}.{pattern_note}{browser_note}"
 
 
-def _cmd_list(data: dict) -> str:
+def _cmd_list(data: dict, stock_state: dict) -> str:
     lines: list[str] = []
+    products_state = stock_state.get("products") or {}
+    categories_state = stock_state.get("categories") or {}
+
     for p in (data.get("products") or []):
-        lines.append(f"📦 **{p.get('name','?')}** ({p.get('shop','?')}) — stock watch")
+        url = p.get("url", "")
+        st = products_state.get(url) or {}
+        if "in_stock" in st:
+            status = "🟢 in stock" if st["in_stock"] else "🔴 sold out"
+        else:
+            status = "⚪ unknown (not checked yet)"
+        lines.append(f"📦 **{p.get('name','?')}** ({p.get('shop','?')}) — {status}")
     for c in (data.get("categories") or []):
-        lines.append(f"🗂️ **{c.get('name','?')}** ({c.get('shop','?')}) — new listings")
+        url = c.get("url", "")
+        cs = categories_state.get(url) or {}
+        count = len(cs.get("known_urls") or [])
+        suffix = f"{count} products tracked" if cs.get("initialized") else "not yet baselined"
+        lines.append(f"🗂️ **{c.get('name','?')}** ({c.get('shop','?')}) — {suffix}")
     return "\n".join(lines) if lines else "Nothing is being tracked yet."
 
 
@@ -235,14 +248,14 @@ def _parse_commands(content: str) -> list[tuple[str, ...]]:
     return commands
 
 
-def _dispatch(data: dict, parts: tuple[str, ...]) -> tuple[str, bool]:
+def _dispatch(data: dict, stock_state: dict, parts: tuple[str, ...]) -> tuple[str, bool]:
     """Execute one parsed command. Returns (reply_text, config_changed)."""
     cmd = parts[0].lower() if parts else ""
 
     if cmd == "!help":
         return HELP_TEXT, False
     if cmd == "!list":
-        return _cmd_list(data), False
+        return _cmd_list(data, stock_state), False
     if cmd == "!remove":
         if len(parts) < 2:
             return "Usage: `!remove <name>`", False
@@ -272,7 +285,7 @@ def _dispatch(data: dict, parts: tuple[str, ...]) -> tuple[str, bool]:
     return f"Unknown command `{cmd}`. Type `!help` for usage.", False
 
 
-def run(config_path: Path, state_path: Path) -> None:
+def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("state.json")) -> None:
     token = os.environ.get("DISCORD_BOT_TOKEN", "")
     if not token:
         log.error("DISCORD_BOT_TOKEN environment variable not set.")
@@ -286,11 +299,18 @@ def run(config_path: Path, state_path: Path) -> None:
 
     discord = _Discord(token)
 
+    import json
     state: dict = {}
     if state_path.exists():
-        import json
         try:
-            state = __import__("json").loads(state_path.read_text())
+            state = json.loads(state_path.read_text())
+        except Exception:
+            pass
+
+    stock_state: dict = {}
+    if stock_state_path.exists():
+        try:
+            stock_state = json.loads(stock_state_path.read_text())
         except Exception:
             pass
 
@@ -315,7 +335,7 @@ def run(config_path: Path, state_path: Path) -> None:
         changed = False
         try:
             for cmd_parts in _parse_commands(content):
-                line_reply, line_changed = _dispatch(raw, cmd_parts)
+                line_reply, line_changed = _dispatch(raw, stock_state, cmd_parts)
                 reply_lines.append(line_reply)
                 changed = changed or line_changed
         except Exception as e:
@@ -333,7 +353,6 @@ def run(config_path: Path, state_path: Path) -> None:
 
         state["last_message_id"] = mid
 
-    import json
     state_path.write_text(json.dumps(state, indent=2))
 
     if config_changed:
