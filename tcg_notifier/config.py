@@ -28,7 +28,7 @@ NAVER_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 
-# All Naver shop/store subdomains that require the browser + Korean stock logic.
+# All Naver shop/store subdomains that require Korean stock logic in the browser.
 _NAVER_SHOP_HOSTS = (
     "smartstore.naver.com",
     "brand.naver.com",
@@ -38,7 +38,7 @@ _NAVER_SHOP_HOSTS = (
 
 
 def is_naver_smartstore(url: str) -> bool:
-    """Return True for any Naver storefront URL that needs browser rendering."""
+    """Return True for any Naver storefront URL that needs Korean browser logic."""
     host = urlsplit(url).netloc.lower()
     return any(host == h or host.endswith("." + h) for h in _NAVER_SHOP_HOSTS)
 
@@ -50,7 +50,9 @@ class Product:
     shop: str = ""
     in_stock_text: list[str] = field(default_factory=list)
     out_of_stock_text: list[str] = field(default_factory=list)
-    use_browser: bool = False
+    # Defaults to True — every modern retail site is JS-rendered.
+    # Set use_browser: false in config.yaml only for plain static pages.
+    use_browser: bool = True
 
 
 @dataclass
@@ -60,7 +62,8 @@ class Category:
     shop: str = ""
     link_selector: str = "a[href]"
     link_pattern: str | None = None
-    use_browser: bool = False
+    # Defaults to True — same reasoning as Product.
+    use_browser: bool = True
 
 
 @dataclass
@@ -105,8 +108,9 @@ def load_config(path: Path) -> Config:
         p = dict(p)
         p.setdefault("in_stock_text", list(DEFAULT_IN_STOCK))
         p.setdefault("out_of_stock_text", list(DEFAULT_OOS))
-        if is_naver_smartstore(p.get("url", "")):
-            p["use_browser"] = True
+        # use_browser defaults to True in the dataclass; no need to force it here.
+        # Naver still needs its special browser logic — that's handled in browser.py
+        # via is_naver_smartstore(), not by this flag alone.
         products.append(Product(**p))
 
     for p in products:
@@ -119,8 +123,6 @@ def load_config(path: Path) -> Config:
     categories = []
     for c in (data.get("categories") or []):
         c = dict(c)
-        if is_naver_smartstore(c.get("url", "")):
-            c["use_browser"] = True
         categories.append(Category(**c))
 
     command_channel_id = str((data.get("discord") or {}).get("command_channel_id", "") or "")
