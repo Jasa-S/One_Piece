@@ -4,11 +4,14 @@ import json
 import os
 import tempfile
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
 
 # Global lock so __main__.py and discord_commands.py never write simultaneously
 _STATE_LOCK = threading.Lock()
+
+# How many consecutive None results before we discard the cached in_stock value
+# and report the product/URL as unknown rather than showing a stale state.
+UNKNOWN_STREAK_THRESHOLD = 3
 
 
 class State:
@@ -57,11 +60,27 @@ class State:
 
     # ---- explicit products ----
 
-    def was_in_stock(self, url: str) -> bool:
-        return bool(self._data["products"].get(url, {}).get("in_stock"))
+    def get_product_in_stock(self, url: str) -> bool | None:
+        """Return the stored in_stock value, or None if unknown/expired."""
+        entry = self._data["products"].get(url) or {}
+        return entry.get("in_stock")  # None when key absent or explicitly None
 
-    def update_product(self, url: str, in_stock: bool) -> None:
-        self._data["products"][url] = {"in_stock": in_stock}
+    def was_in_stock(self, url: str) -> bool:
+        """Legacy helper — returns False when state is unknown."""
+        return bool(self.get_product_in_stock(url))
+
+    def update_product(self, url: str, in_stock: bool | None) -> None:
+        """Record a definite stock result and reset the unknown streak."""
+        self._data["products"][url] = {"in_stock": in_stock, "unknown_streak": 0}
+        self._dirty = True
+
+    def record_product_unknown(self, url: str) -> None:
+        """Increment the unknown streak; expire cached state after threshold."""
+        entry = self._data["products"].setdefault(url, {})
+        streak = entry.get("unknown_streak", 0) + 1
+        entry["unknown_streak"] = streak
+        if streak >= UNKNOWN_STREAK_THRESHOLD:
+            entry["in_stock"] = None  # mark as unknown in !list
         self._dirty = True
 
     # ---- categories ----
@@ -87,9 +106,28 @@ class State:
         stock = entry.get("stock") or {}
         return stock.get(url)
 
-    def update_category_url_stock(self, category_key: str, url: str, in_stock: bool) -> None:
+    def update_category_url_stock(
+        self, category_key: str, url: str, in_stock: bool
+    ) -> None:
+        """Record a definite stock result for a category URL."""
         entry = self._data["categories"].setdefault(category_key, {})
-        entry.setdefault("stock", {})[url] = in_stock
+        stock = entry.setdefault("stock", {})
+        stock[url] = in_stock
+        # Reset unknown streak
+        streaks = entry.setdefault("unknown_streaks", {})
+        streaks[url] = 0
+        self._dirty = True
+
+    def record_category_url_unknown(
+        self, category_key: str, url: str
+    ) -> None:
+        """Increment unknown streak for a category URL; expire after threshold."""
+        entry = self._data["categories"].setdefault(category_key, {})
+        streaks = entry.setdefault("unknown_streaks", {})
+        streak = streaks.get(url, 0) + 1
+        streaks[url] = streak
+        if streak >= UNKNOWN_STREAK_THRESHOLD:
+            entry.setdefault("stock", {})[url] = None  # expire
         self._dirty = True
 
     def category_stock_summary(self, category_key: str) -> dict:
