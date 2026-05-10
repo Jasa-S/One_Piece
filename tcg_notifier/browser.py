@@ -45,19 +45,34 @@ def fetch_category_browser(category: Category) -> list[FoundProduct] | None:
             except Exception:
                 log.warning("networkidle timed out for %s, using partial content", category.url)
 
-            # Scroll to bottom in steps to trigger lazy-loaded product grids
-            for _ in range(5):
+            # Scroll until page height stops growing (handles infinite-scroll grids)
+            prev_height = 0
+            for i in range(15):
                 page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                page.wait_for_timeout(1200)
+                page.wait_for_timeout(1500)
+                new_height = page.evaluate("document.body.scrollHeight")
+                if new_height == prev_height:
+                    log.debug("scroll stable after %d iterations (height=%d)", i + 1, new_height)
+                    break
+                prev_height = new_height
 
             final_url = page.url
+            all_anchors = page.query_selector_all(category.link_selector)
+            log.info(
+                "%s: final_url=%s, %d anchors found",
+                category.name, final_url, len(all_anchors),
+            )
+
             found: dict[str, str] = {}
-            for el in page.query_selector_all(category.link_selector):
+            sample_unmatched: list[str] = []
+            for el in all_anchors:
                 href = el.get_attribute("href")
                 if not href:
                     continue
                 absolute = urljoin(final_url, href)
                 if pattern and not pattern.search(absolute):
+                    if len(sample_unmatched) < 5:
+                        sample_unmatched.append(absolute)
                     continue
                 normalized = _normalize(absolute)
                 if normalized == _normalize(final_url):
@@ -65,6 +80,12 @@ def fetch_category_browser(category: Category) -> list[FoundProduct] | None:
                 if normalized in found:
                     continue
                 found[normalized] = (el.inner_text() or "").strip()[:200] or normalized
+
+            if pattern and not found and sample_unmatched:
+                log.warning(
+                    "%s: pattern %r matched 0 of %d anchors. Sample hrefs: %s",
+                    category.name, category.link_pattern, len(all_anchors), sample_unmatched,
+                )
 
             browser.close()
         return [FoundProduct(url=u, title=t) for u, t in found.items()]
