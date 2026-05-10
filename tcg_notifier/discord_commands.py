@@ -27,21 +27,20 @@ Single entry:
 `!add category <url> /link_pattern/ <name>` ← explicit pattern
 
 Multiple entries in one message (block format):
-```
 !add product
 https://shop.de/product/1 One Piece OP-09 Display
 https://shop.de/product/2 Pokemon 151 TTB
-```
-```
+
 !add category
 https://shop.de/collections/op https://shop.de/products/op09 One Piece @ JK
 https://shop.de/collections/pokemon /de/product/ Pokemon @ Shop
-```
+
 
 Other commands:
 `!list` — show everything currently tracked
 `!remove <name>` — stop tracking (partial name match)
 `!setpattern <name> /pattern/` — set or update link pattern for a category
+`!reset` — deletes all tracked items and purges recent bot channel messages
 `!help` — show this message
 
 The bot auto-detects whether a site needs a headless browser.
@@ -94,6 +93,14 @@ class _Discord:
         )
         if r.status_code >= 300:
             log.warning("React failed: %s %s", r.status_code, r.text[:200])
+
+    def delete_message(self, channel_id: str, message_id: str) -> None:
+        r = self._s.delete(
+            f"{DISCORD_API}/channels/{channel_id}/messages/{message_id}",
+            timeout=10,
+        )
+        if r.status_code >= 300:
+            log.warning("Delete failed: %s %s", r.status_code, r.text[:200])
 
 
 # ---------------------------------------------------------------------------
@@ -252,17 +259,6 @@ def _cmd_setpattern(data: dict, query: str, pattern: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _parse_commands(content: str) -> list[tuple[str, ...]]:
-    """Parse a (possibly multi-line) message into a list of command tuples.
-
-    Single-line:
-        !add product https://... Name
-        !add category https://... Name
-
-    Block (type on first line, one url+name per subsequent line):
-        !add product
-        https://... Name 1
-        https://... Name 2
-    """
     lines = [l.strip() for l in content.splitlines() if l.strip()]
     commands: list[tuple[str, ...]] = []
     i = 0
@@ -271,7 +267,6 @@ def _parse_commands(content: str) -> list[tuple[str, ...]]:
         cmd = parts[0].lower() if parts else ""
 
         if cmd == "!add" and len(parts) == 2:
-            # Block format: following non-command lines are "url name" pairs
             sub = parts[1].lower()
             i += 1
             while i < len(lines) and not lines[i].startswith("!"):
@@ -289,7 +284,6 @@ def _parse_commands(content: str) -> list[tuple[str, ...]]:
 
 
 def _dispatch(data: dict, stock_state: dict, parts: tuple[str, ...]) -> tuple[str, bool]:
-    """Execute one parsed command. Returns (reply_text, config_changed)."""
     cmd = parts[0].lower() if parts else ""
 
     if cmd == "!help":
@@ -309,13 +303,11 @@ def _dispatch(data: dict, stock_state: dict, parts: tuple[str, ...]) -> tuple[st
         if sub == "category":
             name_field = parts[3]
             if name_field.startswith("http"):
-                # Product example URL provided — derive pattern automatically
                 pp = name_field.split(None, 1)
                 example_url = pp[0]
                 name = pp[1] if len(pp) > 1 else example_url
                 link_pattern = _derive_link_pattern(url, example_url)
             elif name_field.startswith("/"):
-                # Explicit pattern provided
                 pp = name_field.split(None, 1)
                 link_pattern = pp[0]
                 name = pp[1] if len(pp) > 1 else name_field
@@ -368,7 +360,6 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
         log.error("Failed to fetch Discord messages: %s", e)
         return
 
-    # API returns newest-first; process oldest-first
     messages = [m for m in reversed(messages) if m["content"].strip().startswith("!")]
     config_changed = False
 
@@ -376,6 +367,30 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
         mid = msg["id"]
         content = msg["content"].strip()
         log.info("Command message: %s", content[:120])
+
+        # --- NEW RESET COMMAND ---
+        if content.lower() == "!reset":
+            log.info("Running !reset: clearing config and purging messages.")
+            raw["products"] = []
+            raw["categories"] = []
+            config_changed = True
+            
+            # Fetch recent messages (up to 100) and delete them
+            all_msgs = discord.messages(channel_id, after=None)
+            for m in all_msgs:
+                discord.delete_message(channel_id, m["id"])
+                
+            # Send confirmation
+            discord._s.post(
+                f"{DISCORD_API}/channels/{channel_id}/messages",
+                json={"content": "✅ **Bot reset successfully.** Config cleared and recent messages deleted."},
+                timeout=10,
+            )
+            
+            # Clear the state to start fresh
+            state.pop("last_message_id", None)
+            break
+        # -------------------------
 
         reply_lines: list[str] = []
         changed = False
