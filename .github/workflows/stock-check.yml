@@ -10,6 +10,10 @@ on:
         type: boolean
         default: false
 
+concurrency:
+  group: tcg-stock-check
+  cancel-in-progress: false  # let the running job finish, queue the next
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -19,6 +23,8 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          ref: main  # always pull the latest committed state
 
       - name: Set up Python
         uses: actions/setup-python@v5
