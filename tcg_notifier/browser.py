@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import threading
+import time
 from contextlib import contextmanager
 from typing import Generator
 from urllib.parse import urljoin
@@ -20,6 +21,12 @@ log = logging.getLogger(__name__)
 _lock = threading.Lock()
 _pw_instance = None
 _browser_instance = None
+
+# How many times to reload a Naver brand page when we hit the queue/error page
+# before giving up and returning None.
+_NAVER_QUEUE_RETRIES = 4
+# Seconds to wait between queue-page reload attempts.
+_NAVER_QUEUE_RETRY_DELAY = 8
 
 
 def _get_playwright():
@@ -124,42 +131,57 @@ _BRAND_NAVER_IN_STOCK_PHRASES = [
 ]
 
 
-def _check_naver_brand(page, product: Product) -> tuple[bool | None, str]:
-    """Stock check for brand.naver.com.
-
-    Priority order:
-      1. Wait for networkidle so React has fully hydrated the DOM.
-      2. Require __NEXT_DATA__ to be present — if missing, the real product
-         page did not load (queue/error page). Return None (unknown) so the
-         previous known state is preserved.
-      3. Body text: sold-out Korean phrases.
-      4. __NEXT_DATA__ JSON: targeted path only.
-      5. Body text: in-stock phrases — but ONLY inside #__NEXT_DATA__ page,
-         i.e. only reached when we confirmed the real page loaded.
-      6. Fallback to generic Naver DOM/text check.
-    """
-    # --- 1. Wait for full React hydration ---
+def _fetch_next_data(page, url: str) -> str | None:
+    """Navigate to url, wait for networkidle, and return #__NEXT_DATA__ text or None."""
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=20_000)
+    except Exception:
+        log.debug("brand.naver: domcontentloaded timed out, using partial content")
     try:
         page.wait_for_load_state("networkidle", timeout=20_000)
     except Exception:
-        log.debug("brand.naver: networkidle timeout, proceeding with current DOM")
-
-    # --- 2. __NEXT_DATA__ presence check (queue/error page guard) ---
-    # brand.naver.com is a Next.js app — every real product page has #__NEXT_DATA__.
-    # Naver's waiting-room / throttle page does NOT have it.
-    # If it's missing we cannot determine stock, so return None.
-    next_data_raw: str | None = None
+        log.debug("brand.naver: networkidle timed out, proceeding with current DOM")
     try:
-        next_data_raw = page.eval_on_selector("#__NEXT_DATA__", "el => el.textContent")
+        return page.eval_on_selector("#__NEXT_DATA__", "el => el.textContent")
     except Exception:
-        pass
+        return None
+
+
+def _check_naver_brand(page, product: Product) -> tuple[bool | None, str]:
+    """Stock check for brand.naver.com.
+
+    Retries loading the page up to _NAVER_QUEUE_RETRIES times when the
+    Naver queue/waiting-room page is detected (no #__NEXT_DATA__). Only
+    returns None once all retries are exhausted.
+
+    Priority order once a real product page is confirmed:
+      1. Body text: sold-out Korean phrases.
+      2. __NEXT_DATA__ JSON: targeted path only.
+      3. Body text: in-stock phrases.
+      4. Fallback to generic Naver DOM/text check.
+    """
+    # --- Load page and retry if we hit the queue ---
+    next_data_raw: str | None = _fetch_next_data(page, product.url)
+
+    attempt = 0
+    while not next_data_raw and attempt < _NAVER_QUEUE_RETRIES:
+        attempt += 1
+        log.warning(
+            "brand.naver: queue/error page detected for %s — retry %d/%d in %ds",
+            product.url, attempt, _NAVER_QUEUE_RETRIES, _NAVER_QUEUE_RETRY_DELAY,
+        )
+        time.sleep(_NAVER_QUEUE_RETRY_DELAY)
+        next_data_raw = _fetch_next_data(page, product.url)
 
     if not next_data_raw:
         log.warning(
-            "brand.naver: #__NEXT_DATA__ missing for %s — likely queue/error page, skipping",
-            product.url,
+            "brand.naver: #__NEXT_DATA__ missing for %s after %d retries — giving up",
+            product.url, _NAVER_QUEUE_RETRIES,
         )
-        return None, "brand.naver: no #__NEXT_DATA__ — queue/error page, result skipped"
+        return None, f"brand.naver: no #__NEXT_DATA__ after {_NAVER_QUEUE_RETRIES} retries — queue/error page"
+
+    if attempt:
+        log.info("brand.naver: real product page loaded after %d retry/retries", attempt)
 
     # Real product page confirmed — now check stock.
     body_text = ""
@@ -168,12 +190,12 @@ def _check_naver_brand(page, product: Product) -> tuple[bool | None, str]:
     except Exception as exc:
         log.debug("brand.naver: body text read failed: %s", exc)
 
-    # --- 3. Body text: sold-out phrases ---
+    # --- 1. Body text: sold-out phrases ---
     for phrase in _BRAND_NAVER_OOS_PHRASES:
         if phrase in body_text:
             return False, f"body oos phrase: {phrase!r}"
 
-    # --- 4. __NEXT_DATA__ JSON: targeted path only ---
+    # --- 2. __NEXT_DATA__ JSON: targeted path only ---
     try:
         data = json.loads(next_data_raw)
         sold_out = _extract_sold_out_targeted(data)
@@ -184,12 +206,12 @@ def _check_naver_brand(page, product: Product) -> tuple[bool | None, str]:
     except Exception as exc:
         log.debug("brand.naver: __NEXT_DATA__ parse failed: %s", exc)
 
-    # --- 5. Body text: in-stock phrases ---
+    # --- 3. Body text: in-stock phrases ---
     for phrase in _BRAND_NAVER_IN_STOCK_PHRASES:
         if phrase in body_text:
             return True, f"body in-stock phrase: {phrase!r}"
 
-    # --- 6. Fallback ---
+    # --- 4. Fallback ---
     log.debug("brand.naver: falling back to DOM/text check for %s", product.url)
     return _check_naver(page, product)
 
@@ -405,13 +427,14 @@ def check_product_browser(product: Product) -> tuple[bool | None, str]:
 
     try:
         with _browser_page(product.url) as page:
+            if "brand.naver.com" in host:
+                # Navigation is handled inside _check_naver_brand (with retry logic)
+                return _check_naver_brand(page, product)
+
             try:
                 page.goto(product.url, wait_until="domcontentloaded", timeout=20_000)
             except Exception:
                 log.warning("domcontentloaded timed out for %s, using partial content", product.url)
-
-            if "brand.naver.com" in host:
-                return _check_naver_brand(page, product)
 
             if is_naver_smartstore(product.url):
                 return _check_naver(page, product)
