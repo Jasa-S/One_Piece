@@ -17,7 +17,12 @@ from .browser import close_shared_browser
 from .category import fetch_category
 from .checker import check_product, CheckResult
 from .config import Config, Defaults, Product, load_config
-from .notifier import send_in_stock_alert, send_new_listing_alert, send_category_in_stock_alert, send_blocked_alert
+from .notifier import (
+    send_in_stock_alert,
+    send_new_listing_alert,
+    send_category_in_stock_alert,
+    send_blocked_alert,
+)
 from .state import State
 
 log = logging.getLogger("tcg_notifier")
@@ -43,19 +48,38 @@ def _check_products(config: Config, state: State) -> None:
                 continue
 
             if result is None:
-                log.warning("Skipping %s — all retries exhausted (site blocked or unreadable).", product.name)
+                log.warning(
+                    "Skipping %s — all retries exhausted (site blocked or unreadable).",
+                    product.name,
+                )
                 state.record_product_unknown(product.url)
                 send_blocked_alert(
                     config.webhook_url,
                     name=product.name,
                     url=product.url,
-                    reason="All retries exhausted — the site is blocking the bot or the page could not be read. Stock state has NOT been updated.",
+                    reason=(
+                        "All retries exhausted — the site is blocking the bot or the page "
+                        "could not be read. Stock state has NOT been updated."
+                    ),
                     shop=product.shop,
                 )
                 continue
 
+            # ---- baseline: first time we've ever seen this product ----
+            if not state.is_product_baselined(product.url):
+                log.info(
+                    "%s [%s] — baseline recorded: in_stock=%s",
+                    product.name, product.shop, result.in_stock,
+                )
+                state.baseline_product(product.url, result.in_stock)
+                continue  # no alert on first sight
+
+            # ---- normal monitoring ----
             previously_in_stock = state.was_in_stock(product.url)
-            log.info("%s [%s] in_stock=%s (%s)", product.name, product.shop, result.in_stock, result.detail)
+            log.info(
+                "%s [%s] in_stock=%s (%s)",
+                product.name, product.shop, result.in_stock, result.detail,
+            )
 
             if result.in_stock and not previously_in_stock:
                 log.info("Sending in-stock alert for %s", product.name)
@@ -72,6 +96,7 @@ def _check_category_stocks(
     defaults: Defaults,
 ) -> dict[str, CheckResult | None]:
     from .config import DEFAULT_IN_STOCK, DEFAULT_OOS, is_naver_smartstore
+
     session = requests.Session()
     results: dict[str, CheckResult | None] = {}
 
@@ -128,6 +153,7 @@ def _check_categories(config: Config, state: State) -> None:
                 category.name, category.shop, len(current), len(known), len(new_urls),
             )
 
+            # Send new-listing alerts only after the category itself is initialized
             if state.is_category_initialized(category.url):
                 for url in new_urls:
                     log.info("New listing in %s: %s", category.name, url)
@@ -145,17 +171,35 @@ def _check_categories(config: Config, state: State) -> None:
 
             for url, result in stock_results.items():
                 if result is None:
-                    log.warning("Skipping category URL %s — site blocked or unreadable.", url)
+                    log.warning(
+                        "Skipping category URL %s — site blocked or unreadable.", url
+                    )
                     state.record_category_url_unknown(category.url, url)
                     send_blocked_alert(
                         config.webhook_url,
                         name=current.get(url, url),
                         url=url,
-                        reason=f"All retries exhausted in category \u201c{category.name}\u201d — the site is blocking the bot or the page could not be read. Stock state has NOT been updated.",
+                        reason=(
+                            f"All retries exhausted in category \u201c{category.name}\u201d — "
+                            "the site is blocking the bot or the page could not be read. "
+                            "Stock state has NOT been updated."
+                        ),
                         shop=category.shop,
                     )
                     continue
+
                 title = current.get(url, url)
+
+                # ---- baseline: first time we've seen stock for this URL ----
+                if not state.is_category_url_baselined(category.url, url):
+                    log.info(
+                        "%s — baseline recorded for %s: in_stock=%s",
+                        category.name, url, result.in_stock,
+                    )
+                    state.baseline_category_url(category.url, url, result.in_stock)
+                    continue  # no alert on first sight
+
+                # ---- normal monitoring ----
                 previously = state.was_category_url_in_stock(category.url, url)
 
                 if result.in_stock and previously is not True:
@@ -251,8 +295,12 @@ def main(argv: list[str] | None = None) -> int:
         from .notifier import _post
         _post(config.webhook_url, {
             "username": "TCG Stock Notifier",
-            "content": "Test ping \u2014 the notifier is set up and working!",
-            "embeds": [{"title": "Connection test", "description": "Discord notifications are working.", "color": 0x3498DB}],
+            "content": "Test ping — the notifier is set up and working!",
+            "embeds": [{
+                "title": "Connection test",
+                "description": "Discord notifications are working.",
+                "color": 0x3498DB,
+            }],
         })
         log.info("Test ping sent.")
         return 0

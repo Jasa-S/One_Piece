@@ -32,20 +32,13 @@ class State:
                 if k not in ("products", "categories"):
                     self._data[k] = v
 
-        # Migration: strip unknown_streak noise and null in_stock entries written
-        # by the old record_product_unknown logic.  A product with in_stock=null
-        # has never been successfully checked — remove it entirely so the next
-        # run treats it as unseen rather than as "confirmed out of stock".
+        # Migration: strip legacy noise.
+        # Products with in_stock=null were written by old unknown logic — remove
+        # them so the next run re-baselines from scratch.
         for url, entry in list(self._data["products"].items()):
             entry.pop("unknown_streak", None)
-            if entry.get("in_stock") is None:
+            if entry.get("in_stock") is None and not entry.get("baselined"):
                 del self._data["products"][url]
-                self._dirty = True
-            elif entry.keys() == {"in_stock"}:
-                pass  # already clean
-            else:
-                # keep only in_stock
-                self._data["products"][url] = {"in_stock": entry["in_stock"]}
                 self._dirty = True
 
         # Same cleanup for category unknown_streaks
@@ -57,7 +50,6 @@ class State:
             return
         if last_checked_at:
             self._data["last_checked_at"] = last_checked_at
-        # Atomic write: write to a temp file then rename so a crash never corrupts state
         with _STATE_LOCK:
             tmp_fd, tmp_path = tempfile.mkstemp(
                 dir=self.path.parent, prefix=".state_tmp_", suffix=".json"
@@ -74,7 +66,17 @@ class State:
                 raise
         self._dirty = False
 
-    # ---- explicit products ----
+    # ------------------------------------------------------------------ products
+
+    def is_product_baselined(self, url: str) -> bool:
+        """True once a successful baseline check has been recorded."""
+        entry = self._data["products"].get(url) or {}
+        return bool(entry.get("baselined"))
+
+    def baseline_product(self, url: str, in_stock: bool) -> None:
+        """Record the first-ever stock result — silently, no alert."""
+        self._data["products"][url] = {"baselined": True, "in_stock": in_stock}
+        self._dirty = True
 
     def get_product_in_stock(self, url: str) -> bool | None:
         """Return the stored in_stock value, or None if not yet seen."""
@@ -82,19 +84,20 @@ class State:
         return entry.get("in_stock")
 
     def was_in_stock(self, url: str) -> bool:
-        """Legacy helper — returns False when state is unknown."""
+        """Returns False when state is unknown."""
         return bool(self.get_product_in_stock(url))
 
     def update_product(self, url: str, in_stock: bool) -> None:
-        """Record a definite stock result."""
-        self._data["products"][url] = {"in_stock": in_stock}
+        """Record a definite stock result (post-baseline)."""
+        entry = self._data["products"].setdefault(url, {})
+        entry["baselined"] = True
+        entry["in_stock"] = in_stock
         self._dirty = True
 
     def record_product_unknown(self, url: str) -> None:
-        """A check failed — do NOT touch in_stock.  Leave whatever we last knew."""
-        # Nothing to write; we preserve the previous known state.
+        """A check failed — do NOT touch state. Leave whatever we last knew."""
 
-    # ---- categories ----
+    # --------------------------------------------------------------- categories
 
     def known_urls(self, category_key: str) -> set[str]:
         entry = self._data["categories"].get(category_key) or {}
@@ -112,6 +115,24 @@ class State:
         entry["stock"] = {u: existing_stock[u] for u in known if u in existing_stock}
         self._dirty = True
 
+    def is_category_url_baselined(self, category_key: str, url: str) -> bool:
+        """True once this URL has a successful baseline stock check."""
+        entry = self._data["categories"].get(category_key) or {}
+        baselined = entry.get("baselined_urls") or []
+        return url in baselined
+
+    def baseline_category_url(
+        self, category_key: str, url: str, in_stock: bool
+    ) -> None:
+        """Record first-ever stock result for a category URL — silently, no alert."""
+        entry = self._data["categories"].setdefault(category_key, {})
+        stock = entry.setdefault("stock", {})
+        stock[url] = in_stock
+        baselined = entry.setdefault("baselined_urls", [])
+        if url not in baselined:
+            baselined.append(url)
+        self._dirty = True
+
     def was_category_url_in_stock(self, category_key: str, url: str) -> bool | None:
         entry = self._data["categories"].get(category_key) or {}
         stock = entry.get("stock") or {}
@@ -120,17 +141,20 @@ class State:
     def update_category_url_stock(
         self, category_key: str, url: str, in_stock: bool
     ) -> None:
-        """Record a definite stock result for a category URL."""
+        """Record a definite stock result for a category URL (post-baseline)."""
         entry = self._data["categories"].setdefault(category_key, {})
         stock = entry.setdefault("stock", {})
         stock[url] = in_stock
+        # Mark as baselined too in case it wasn't already
+        baselined = entry.setdefault("baselined_urls", [])
+        if url not in baselined:
+            baselined.append(url)
         self._dirty = True
 
     def record_category_url_unknown(
         self, category_key: str, url: str
     ) -> None:
-        """A check failed — do NOT touch stock state.  Leave whatever we last knew."""
-        # Nothing to write; we preserve the previous known state.
+        """A check failed — do NOT touch stock state. Leave whatever we last knew."""
 
     def category_stock_summary(self, category_key: str) -> dict:
         entry = self._data["categories"].get(category_key) or {}
