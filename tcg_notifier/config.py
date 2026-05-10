@@ -24,6 +24,7 @@ class Product:
     in_stock_text: list[str] = field(default_factory=list)
     out_of_stock_text: list[str] = field(default_factory=list)
     use_browser: bool = False  # set True for JS-rendered shops
+    category_url: str = ""    # set when auto-registered from a category
 
 
 @dataclass

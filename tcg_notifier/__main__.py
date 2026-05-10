@@ -32,6 +32,7 @@ def _register_as_product(config: Config, raw: dict, category, url: str, title: s
         "name": name,
         "shop": category.shop,
         "url": url,
+        "category_url": category.url,
         "out_of_stock_text": DEFAULT_OOS,
         "in_stock_text": DEFAULT_IN_STOCK,
     }
@@ -40,6 +41,7 @@ def _register_as_product(config: Config, raw: dict, category, url: str, title: s
     raw.setdefault("products", []).append(entry)
     config.products.append(Product(
         name=name, url=url, shop=category.shop,
+        category_url=category.url,
         out_of_stock_text=DEFAULT_OOS,
         in_stock_text=DEFAULT_IN_STOCK,
         use_browser=category.use_browser,

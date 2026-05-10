@@ -223,13 +223,61 @@ def _cmd_list(data: dict, stock_state: dict) -> str:
 def _cmd_remove(data: dict, query: str) -> str:
     q = query.lower()
     removed: list[str] = []
-    for key in ("products", "categories"):
-        before = data.get(key) or []
-        after = [i for i in before if q not in i.get("name", "").lower()]
-        for i in before:
-            if q in i.get("name", "").lower():
-                removed.append(i["name"])
-        data[key] = after
+    removed_categories: list[dict] = []
+
+    # Remove matching categories (keep full dict for cascade)
+    before_cats = data.get("categories") or []
+    after_cats = []
+    for c in before_cats:
+        if q in c.get("name", "").lower():
+            removed.append(c["name"])
+            removed_categories.append(c)
+        else:
+            after_cats.append(c)
+    data["categories"] = after_cats
+
+    # Remove matching products by name
+    before_prods = data.get("products") or []
+    after_prods = []
+    for p in before_prods:
+        if q in p.get("name", "").lower():
+            removed.append(p["name"])
+        else:
+            after_prods.append(p)
+
+    # Cascade: remove products auto-registered from any removed category
+    if removed_categories:
+        removed_cat_urls = {c.get("url", "") for c in removed_categories}
+        # Build regex matchers for legacy products that predate the category_url field
+        cat_matchers: list[tuple[re.Pattern, str]] = []
+        for c in removed_categories:
+            pat = c.get("link_pattern")
+            shop = c.get("shop", "")
+            if pat:
+                try:
+                    cat_matchers.append((re.compile(pat), shop))
+                except re.error:
+                    pass
+
+        final_prods = []
+        for p in after_prods:
+            # New-style: product carries its origin category URL
+            if p.get("category_url") and p["category_url"] in removed_cat_urls:
+                removed.append(p["name"])
+                continue
+            # Legacy: match by shop + link_pattern
+            dropped = False
+            for pat, shop in cat_matchers:
+                if p.get("shop", "") == shop and pat.search(p.get("url", "")):
+                    removed.append(p["name"])
+                    dropped = True
+                    break
+            if not dropped:
+                final_prods.append(p)
+        after_prods = final_prods
+
+    data["products"] = after_prods
+
     if removed:
         return "✅ Removed: " + ", ".join(f"**{n}**" for n in removed)
     return f"Nothing found matching `{query}`."
