@@ -368,29 +368,35 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
         content = msg["content"].strip()
         log.info("Command message: %s", content[:120])
 
-        # --- NEW RESET COMMAND ---
         if content.lower() == "!reset":
             log.info("Running !reset: clearing config and purging messages.")
             raw["products"] = []
             raw["categories"] = []
             config_changed = True
-            
+
             # Fetch recent messages (up to 100) and delete them
             all_msgs = discord.messages(channel_id, after=None)
             for m in all_msgs:
                 discord.delete_message(channel_id, m["id"])
-                
+
             # Send confirmation
             discord._s.post(
                 f"{DISCORD_API}/channels/{channel_id}/messages",
                 json={"content": "✅ **Bot reset successfully.** Config cleared and recent messages deleted."},
                 timeout=10,
             )
-            
-            # Clear the state to start fresh
+
+            # FIX: explicitly clear last_message_id so the bot is not stuck after reset
             state.pop("last_message_id", None)
-            break
-        # -------------------------
+            state_path.write_text(json.dumps(state, indent=2))
+
+            if config_changed:
+                config_path.write_text(
+                    yaml.dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=False),
+                    encoding="utf-8",
+                )
+                log.info("config.yaml updated after reset.")
+            return
 
         reply_lines: list[str] = []
         changed = False
