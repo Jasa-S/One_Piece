@@ -27,6 +27,9 @@ def _normalize(url: str) -> str:
 
 
 def fetch_category(category: Category, defaults: Defaults) -> list[FoundProduct] | None:
+    if category.use_browser:
+        from .browser import fetch_category_browser
+        return fetch_category_browser(category)
     headers = {
         "User-Agent": defaults.user_agent,
         "Accept-Language": "de-DE,de;q=0.9,en;q=0.6",
