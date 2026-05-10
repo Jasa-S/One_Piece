@@ -22,6 +22,13 @@ def check_product(product: Product, defaults: Defaults) -> CheckResult | None:
 
     Returns None if the page can't be fetched (network error, non-200, blocked).
     """
+    if product.use_browser:
+        from .browser import check_product_browser
+        in_stock, detail = check_product_browser(product)
+        if in_stock is None:
+            return None
+        return CheckResult(in_stock, detail)
+
     headers = {
         "User-Agent": defaults.user_agent,
         "Accept-Language": "de-DE,de;q=0.9,en;q=0.6",
