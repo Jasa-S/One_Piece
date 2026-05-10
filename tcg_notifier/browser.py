@@ -206,19 +206,28 @@ def _browser_page(url: str) -> Generator:
 
 
 # ---------------------------------------------------------------------------
-# brand.naver.com — combined __NEXT_DATA__ + DOM/phrase check
+# brand.naver.com — combined __NEXT_DATA__ + body-text check
 # ---------------------------------------------------------------------------
 
-_BRAND_NAVER_OOS_PHRASES = [
-    "\ud488\uc808\ub418\uc5c8\uc2b5\ub2c8\ub2e4",   # 품절되었습니다
-    "\uc77c\uc2dc\ud488\uc808",                       # 일시품절
-    "\ud488\uc808",                                   # 품절
+# In-stock phrases: checked FIRST because a live buy/cart button is the most
+# reliable signal. These only appear when the product is actually purchasable.
+_BRAND_NAVER_IN_STOCK_PHRASES = [
+    "\uad6c\ub9e4\ud558\uae30",   # 구매하기  (Buy now)
+    "\uc7a5\ubc14\uad6c\ub2c8",   # 장바구니 (Add to cart)
 ]
 
-_BRAND_NAVER_IN_STOCK_PHRASES = [
-    "\uad6c\ub9e4\ud558\uae30",   # 구매하기
-    "\uc7a5\ubc14\uad6c\ub2c8",   # 장바구니
+# OOS phrases: 품절 can appear in navigation/filter links on in-stock pages
+# (e.g. "품절 상품 보기"), so we only treat it as OOS when the in-stock
+# phrases are absent AND it appears as a standalone token (surrounded by
+# whitespace / line boundaries / punctuation).
+_BRAND_NAVER_OOS_PHRASES_EXACT = [
+    "\ud488\uc808\ub418\uc5c8\uc2b5\ub2c8\ub2e4",  # 품절되었습니다 (It is sold out) — always conclusive
+    "\uc77c\uc2dc\ud488\uc808",                      # 일시품절 (Temporarily out of stock)
 ]
+# 품절 alone needs a word-boundary check (Korean has no \b, use surrounding chars)
+_BRAND_NAVER_OOS_STANDALONE = re.compile(
+    r"(?<![\uAC00-\uD7A3\w])\ud488\uc808(?![\uAC00-\uD7A3\w])"
+)
 
 
 def _fetch_next_data(page, url: str) -> str | None:
@@ -240,19 +249,16 @@ def _fetch_next_data(page, url: str) -> str | None:
 def _check_naver_brand(page, product: Product) -> tuple[bool | None, str]:
     """Stock check for brand.naver.com.
 
-    Strategy (in order):
-    1. Try to get a definitive answer from __NEXT_DATA__ (soldOut / stockCount fields).
-       Retry up to _NAVER_QUEUE_RETRIES times if the page shows a queue/error.
-    2. Check body text for OOS phrases (품절 etc.) — reliable even without __NEXT_DATA__.
-    3. Check body text for in-stock phrases (구매하기 etc.).
-    4. Fall through to the same DOM-selector + phrase check used for Smartstore.
-       This is the same logic that correctly detects stock on other Naver products.
-
-    We never return None (unknown) unless the page genuinely failed to load at all.
+    Order of precedence:
+    1. __NEXT_DATA__ soldOut=true  → definitively OOS, return immediately.
+    2. Body in-stock phrases (구매하기 / 장바구니)  → definitively IN STOCK, return immediately.
+       Checked before OOS phrases because a live buy button is unambiguous.
+    3. Body OOS phrases (품절되었습니다 / 일시품절 / standalone 품절)  → OOS.
+    4. __NEXT_DATA__ soldOut=false  → IN STOCK (already logged in step 1).
+    5. Assumed in stock (no evidence of OOS found on a real product page).
     """
     next_data_raw: str | None = _fetch_next_data(page, product.url)
 
-    # Retry only if __NEXT_DATA__ is completely absent (queue/error page).
     attempt = 0
     while not next_data_raw and attempt < _NAVER_QUEUE_RETRIES:
         attempt += 1
@@ -263,46 +269,55 @@ def _check_naver_brand(page, product: Product) -> tuple[bool | None, str]:
         time.sleep(_NAVER_QUEUE_RETRY_DELAY)
         next_data_raw = _fetch_next_data(page, product.url)
 
-    # --- Step 1: __NEXT_DATA__ structured check (conclusive only) ---
+    # Step 1: __NEXT_DATA__ soldOut=true is conclusive — return immediately.
+    next_data_sold_out: bool | None = None
     if next_data_raw:
         if attempt:
             log.info("brand.naver: real page loaded after %d retry/retries", attempt)
         try:
             data = json.loads(next_data_raw)
-            sold_out = _extract_sold_out_targeted(data)
-            if sold_out is True:
+            next_data_sold_out = _extract_sold_out_targeted(data)
+            if next_data_sold_out is True:
                 return False, "__NEXT_DATA__ soldOut=true"
-            if sold_out is False:
-                # Confirmed in stock via structured data — still verify with body text
-                # before returning, to catch edge cases where the flag is stale.
-                log.debug("brand.naver: __NEXT_DATA__ soldOut=false, confirming via body")
         except Exception as exc:
             log.debug("brand.naver: __NEXT_DATA__ parse error: %s", exc)
     else:
         log.warning(
-            "brand.naver: no __NEXT_DATA__ after %d retries for %s — continuing to DOM check",
+            "brand.naver: no __NEXT_DATA__ after %d retries for %s — continuing to body check",
             _NAVER_QUEUE_RETRIES, product.url,
         )
 
-    # --- Step 2 & 3: Body text phrases ---
+    # Read body text once for all subsequent checks.
     body_text = ""
     try:
         body_text = page.inner_text("body")
     except Exception as exc:
         log.debug("brand.naver: body text read failed: %s", exc)
 
-    for phrase in _BRAND_NAVER_OOS_PHRASES:
-        if phrase in body_text:
-            return False, f"body OOS phrase: {phrase!r}"
-
+    # Step 2: In-stock phrases — checked BEFORE OOS phrases.
+    # A visible buy/cart button is unambiguous; 품절 can appear in filter/nav links.
     for phrase in _BRAND_NAVER_IN_STOCK_PHRASES:
         if phrase in body_text:
             return True, f"body in-stock phrase: {phrase!r}"
 
-    # --- Step 4: Full Naver DOM selector + JSON-LD fallback ---
-    # Same logic that works reliably for smartstore.naver.com.
-    log.debug("brand.naver: falling through to _check_naver DOM check for %s", product.url)
-    return _check_naver(page, product)
+    # Step 3: OOS phrases.
+    for phrase in _BRAND_NAVER_OOS_PHRASES_EXACT:
+        if phrase in body_text:
+            return False, f"body OOS phrase: {phrase!r}"
+    if _BRAND_NAVER_OOS_STANDALONE.search(body_text):
+        return False, "body standalone 품절 matched"
+
+    # Step 4: __NEXT_DATA__ soldOut=false — structured data confirms in stock.
+    if next_data_sold_out is False:
+        return True, "__NEXT_DATA__ soldOut=false"
+
+    # Step 5: No OOS evidence found on what appears to be a real product page.
+    # Default to in-stock rather than out-of-stock to avoid false OOS alerts.
+    log.debug(
+        "brand.naver: no conclusive stock signal for %s — defaulting to in-stock",
+        product.url,
+    )
+    return True, "no OOS signal found (defaulting to in-stock)"
 
 
 def _extract_sold_out_targeted(data: dict) -> bool | None:
