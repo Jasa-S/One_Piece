@@ -27,5 +27,4 @@ products:
   - Add to cart
   - 구매하기
   - 장바구니
-  use_browser: true
 categories: []
