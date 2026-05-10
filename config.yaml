@@ -92,6 +92,27 @@ products:
   - 구매하기
   - 장바구니
   use_browser: true
+- name: Erste Partner
+  shop: Gate to the Games
+  url: https://www.gate-to-the-games.de/Pokemon-Erste-Partner-Kollektion-deutsch
+  out_of_stock_text:
+  - Ausverkauft
+  - Nicht verfügbar
+  - Vergriffen
+  - Derzeit nicht verfügbar
+  - Sold out
+  - Out of stock
+  - 품절
+  - 일시품절
+  in_stock_text:
+  - In den Warenkorb
+  - In den Einkaufswagen
+  - Auf Lager
+  - Lieferbar
+  - Sofort lieferbar
+  - Add to cart
+  - 구매하기
+  - 장바구니
 categories:
 - name: Saturn Tin Boxen
   shop: Saturn
