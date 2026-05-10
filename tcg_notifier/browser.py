@@ -31,13 +31,6 @@ _NAVER_QUEUE_RETRY_DELAY = 8
 # ---------------------------------------------------------------------------
 # Borlabs Cookie — localStorage injection
 # ---------------------------------------------------------------------------
-# Borlabs reads a JSON blob from localStorage key "borlabs-cookie" on every
-# page load. If the key is absent (fresh context), the consent overlay blocks
-# the page. We inject a pre-accepted payload before the real navigation so the
-# overlay never appears.
-#
-# Strategy: navigate to the origin's blank page first (so localStorage is
-# scoped to the correct origin), inject the key, then navigate to the real URL.
 
 _BORLABS_PAYLOAD = json.dumps({
     "consents": {
@@ -54,19 +47,15 @@ _BORLABS_PAYLOAD = json.dumps({
 
 
 def _is_borlabs_site(url: str) -> bool:
-    """Heuristic: gate-to-the-games uses Borlabs; extend as needed."""
     host = urlsplit(url).netloc.lower()
-    # Add more hostnames here if other shops also use Borlabs.
     return "gate-to-the-games.de" in host
 
 
 def _inject_borlabs_consent(page, url: str) -> None:
-    """Navigate to the site root, inject Borlabs localStorage, then go to url."""
     from urllib.parse import urlsplit
     parts = urlsplit(url)
     origin = f"{parts.scheme}://{parts.netloc}"
     try:
-        # Load origin root (fast — just enough for localStorage to be writable)
         page.goto(origin, wait_until="domcontentloaded", timeout=15_000)
     except Exception:
         pass
@@ -82,19 +71,13 @@ def _inject_borlabs_consent(page, url: str) -> None:
 
 # ---------------------------------------------------------------------------
 # Generic cookie consent click-through
-# Covers: Cookiebot, OneTrust, Usercentrics, and custom German shops.
-# Used as a fallback after localStorage injection for any remaining overlay.
 # ---------------------------------------------------------------------------
 _CONSENT_SELECTORS = [
-    # Cookiebot
     "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
     "button#CybotCookiebotDialogBodyButtonAccept",
-    # OneTrust
     "#onetrust-accept-btn-handler",
     "button.onetrust-close-btn-handler",
-    # Usercentrics
     "button[data-testid='uc-accept-all-button']",
-    # Generic German retail
     "button[class*='accept-all']",
     "button[class*='acceptAll']",
     "button[class*='cookie-accept']",
@@ -118,7 +101,6 @@ _CONSENT_BUTTON_TEXTS = [
 
 
 def _dismiss_consent(page) -> None:
-    """Best-effort cookie consent dismissal via click. Silent on failure."""
     for sel in _CONSENT_SELECTORS:
         try:
             el = page.query_selector(sel)
@@ -155,7 +137,6 @@ def _get_playwright():
 
 
 def get_shared_browser():
-    """Return (playwright, browser), launching once and reusing thereafter."""
     global _pw_instance, _browser_instance
     with _lock:
         if _browser_instance is None or not _browser_instance.is_connected():
@@ -193,13 +174,19 @@ def close_shared_browser() -> None:
     log.info("Shared Playwright browser closed.")
 
 
+def _is_korean_site(url: str) -> bool:
+    """Return True for any Naver domain — both Smartstore and brand.naver.com."""
+    host = urlsplit(url).netloc.lower()
+    return is_naver_smartstore(url) or "naver.com" in host
+
+
 @contextmanager
 def _browser_page(url: str) -> Generator:
     """Open a new page in the shared browser, choosing locale/UA by URL."""
-    naver = is_naver_smartstore(url)
-    locale = "ko-KR" if naver else "de-DE"
-    ua = NAVER_USER_AGENT if naver else DEFAULT_USER_AGENT
-    accept_lang = "ko-KR,ko;q=0.9" if naver else "de-DE,de;q=0.9,en;q=0.6"
+    korean = _is_korean_site(url)
+    locale = "ko-KR" if korean else "de-DE"
+    ua = NAVER_USER_AGENT if korean else DEFAULT_USER_AGENT
+    accept_lang = "ko-KR,ko;q=0.9" if korean else "de-DE,de;q=0.9,en;q=0.6"
 
     _, browser = get_shared_browser()
     if browser is None:
@@ -461,11 +448,6 @@ def _check_naver(page, product: Product) -> tuple[bool | None, str]:
 # ---------------------------------------------------------------------------
 
 def _navigate_with_consent(page, url: str) -> None:
-    """Navigate to url, handling consent banners for known frameworks.
-
-    For Borlabs sites: inject localStorage consent first, then navigate.
-    For all sites: attempt click-through dismissal after load.
-    """
     if _is_borlabs_site(url):
         _inject_borlabs_consent(page, url)
 
@@ -474,7 +456,6 @@ def _navigate_with_consent(page, url: str) -> None:
     except Exception:
         log.warning("domcontentloaded timed out for %s, using partial content", url)
 
-    # Click-through fallback for any remaining overlay
     _dismiss_consent(page)
 
 
