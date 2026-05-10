@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
@@ -40,7 +41,7 @@ Other commands:
 `!list` — show everything currently tracked
 `!remove <name>` — stop tracking (partial name match)
 `!setpattern <name> /pattern/` — set or update link pattern for a category
-`!reset` — deletes all tracked items and purges recent bot channel messages
+`!reset` — deletes all tracked items and purges ALL channel messages
 `!help` — show this message
 
 The bot auto-detects whether a site needs a headless browser.
@@ -101,6 +102,16 @@ class _Discord:
         if r.status_code >= 300:
             log.warning("Delete failed: %s %s", r.status_code, r.text[:200])
 
+    def bulk_delete(self, channel_id: str, message_ids: list[str]) -> None:
+        """Bulk-delete up to 100 messages at once (must be <14 days old)."""
+        r = self._s.post(
+            f"{DISCORD_API}/channels/{channel_id}/messages/bulk-delete",
+            json={"messages": message_ids},
+            timeout=10,
+        )
+        if r.status_code >= 300:
+            log.warning("Bulk delete failed: %s %s", r.status_code, r.text[:200])
+
     def post(self, channel_id: str, content: str) -> dict:
         r = self._s.post(
             f"{DISCORD_API}/channels/{channel_id}/messages",
@@ -109,6 +120,63 @@ class _Discord:
         )
         r.raise_for_status()
         return r.json()
+
+    def delete_all_messages(self, channel_id: str) -> int:
+        """Delete every message in the channel. Returns total count deleted.
+
+        Uses bulk-delete (max 100, messages <14 days old) for recent messages,
+        and falls back to individual deletes for older ones.
+        Discord bulk-delete requires 2+ message IDs; single old messages are
+        deleted one by one.
+        """
+        total = 0
+        before: str | None = None
+
+        while True:
+            params: dict[str, Any] = {"limit": 100}
+            if before:
+                params["before"] = before
+            r = self._s.get(
+                f"{DISCORD_API}/channels/{channel_id}/messages",
+                params=params,
+                timeout=10,
+            )
+            r.raise_for_status()
+            batch = r.json()
+            if not batch:
+                break
+
+            # Snowflake timestamp: messages older than 14 days can't be bulk-deleted
+            import datetime
+            cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=13, hours=23)
+            cutoff_ms = int(cutoff.timestamp() * 1000)
+            # Snowflake: upper 42 bits are ms since Discord epoch (2015-01-01)
+            discord_epoch_ms = 1420070400000
+            cutoff_snowflake = (cutoff_ms - discord_epoch_ms) << 22
+
+            recent = [m["id"] for m in batch if int(m["id"]) >= cutoff_snowflake]
+            old    = [m["id"] for m in batch if int(m["id"]) <  cutoff_snowflake]
+
+            # Bulk-delete recent messages (requires 2+)
+            if len(recent) >= 2:
+                self.bulk_delete(channel_id, recent)
+                total += len(recent)
+            elif len(recent) == 1:
+                self.delete_message(channel_id, recent[0])
+                total += 1
+
+            # Individual-delete old messages
+            for mid in old:
+                self.delete_message(channel_id, mid)
+                total += 1
+                time.sleep(0.3)  # avoid hitting the per-route rate limit
+
+            before = batch[-1]["id"]
+
+            # Brief pause between pages to respect Discord rate limits
+            time.sleep(0.5)
+
+        return total
 
 
 # ---------------------------------------------------------------------------
@@ -373,20 +441,15 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
         log.info("Command message: %s", content[:120])
 
         if content.lower() == "!reset":
-            log.info("Running !reset: clearing config and purging messages.")
+            log.info("Running !reset: clearing config and purging ALL messages.")
             raw["products"] = []
             raw["categories"] = []
 
-            # Fetch and delete recent messages BEFORE posting confirmation,
-            # so the confirmation itself is not caught in the deletion sweep.
-            all_msgs = discord.messages(channel_id, after=None)
-            for m in all_msgs:
-                discord.delete_message(channel_id, m["id"])
+            deleted = discord.delete_all_messages(channel_id)
+            log.info("Deleted %d messages.", deleted)
 
-            # Post confirmation and record its ID as the new last_message_id
-            # so the next run doesn't try to re-process it as a command.
             try:
-                confirm = discord.post(channel_id, "✅ **Bot reset successfully.** Config cleared and recent messages deleted.")
+                confirm = discord.post(channel_id, f"✅ **Bot reset successfully.** Config cleared and {deleted} messages deleted.")
                 state["last_message_id"] = confirm["id"]
             except Exception:
                 state.pop("last_message_id", None)
