@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 import requests
 
@@ -9,23 +10,29 @@ from .config import Category, Product
 log = logging.getLogger(__name__)
 
 
+def _timestamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def send_in_stock_alert(webhook_url: str, product: Product, detail: str) -> None:
+    shop_line = f"`{product.shop}`" if product.shop else "unknown shop"
     embed = {
-        "title": f"In stock: {product.name}",
+        "color": 0x57F287,  # Discord green
+        "author": {
+            "name": "\u2705  Back in Stock",
+        },
+        "title": product.name,
         "url": product.url,
-        "description": product.shop or "TCG product",
-        "color": 0x2ECC71,
         "fields": [
-            {"name": "Detection", "value": detail[:1000], "inline": False},
-            {"name": "Link", "value": product.url, "inline": False},
+            {"name": "\U0001f3ea  Shop", "value": shop_line, "inline": True},
+            {"name": "\U0001f517  Link", "value": f"[Open product page]({product.url})", "inline": True},
         ],
+        "footer": {"text": "TCG Stock Notifier"},
+        "timestamp": _timestamp(),
     }
     payload = {
         "username": "TCG Stock Notifier",
-        "content": (
-            f"@here **{product.name}** is in stock"
-            + (f" at **{product.shop}**!" if product.shop else "!")
-        ),
+        "content": f"@here **{product.name}** is back in stock!",
         "embeds": [embed],
     }
     _post(webhook_url, payload)
@@ -38,20 +45,25 @@ def send_category_in_stock_alert(
     product_title: str,
     detail: str,
 ) -> None:
-    where = f" at **{category.shop}**" if category.shop else ""
+    shop_line = f"`{category.shop}`" if category.shop else "unknown shop"
     embed = {
-        "title": f"In stock: {product_title[:240]}",
+        "color": 0x57F287,
+        "author": {
+            "name": "\u2705  In Stock — Category Alert",
+        },
+        "title": product_title[:256],
         "url": product_url,
-        "description": f"in category **{category.name}**" + (f" — {category.shop}" if category.shop else ""),
-        "color": 0x2ECC71,
         "fields": [
-            {"name": "Detection", "value": detail[:1000], "inline": False},
-            {"name": "Link", "value": product_url, "inline": False},
+            {"name": "\U0001f4c2  Category", "value": f"`{category.name}`", "inline": True},
+            {"name": "\U0001f3ea  Shop", "value": shop_line, "inline": True},
+            {"name": "\U0001f517  Link", "value": f"[Open product page]({product_url})", "inline": False},
         ],
+        "footer": {"text": "TCG Stock Notifier"},
+        "timestamp": _timestamp(),
     }
     payload = {
         "username": "TCG Stock Notifier",
-        "content": f"@here **{product_title[:200]}** is in stock{where} (category: {category.name})!",
+        "content": f"@here **{product_title[:200]}** is in stock!",
         "embeds": [embed],
     }
     _post(webhook_url, payload)
@@ -63,19 +75,25 @@ def send_new_listing_alert(
     product_url: str,
     product_title: str,
 ) -> None:
-    where = f" at **{category.shop}**" if category.shop else ""
+    shop_line = f"`{category.shop}`" if category.shop else "unknown shop"
     embed = {
-        "title": f"New listing: {product_title[:240]}",
+        "color": 0x5865F2,  # Discord blurple — new/informational
+        "author": {
+            "name": "\U0001f195  New Listing Detected",
+        },
+        "title": product_title[:256],
         "url": product_url,
-        "description": f"in {category.name}" + (f" — {category.shop}" if category.shop else ""),
-        "color": 0x3498DB,
         "fields": [
-            {"name": "Link", "value": product_url, "inline": False},
+            {"name": "\U0001f4c2  Category", "value": f"`{category.name}`", "inline": True},
+            {"name": "\U0001f3ea  Shop", "value": shop_line, "inline": True},
+            {"name": "\U0001f517  Link", "value": f"[Open product page]({product_url})", "inline": False},
         ],
+        "footer": {"text": "TCG Stock Notifier"},
+        "timestamp": _timestamp(),
     }
     payload = {
         "username": "TCG Stock Notifier",
-        "content": f"@here new listing in **{category.name}**{where}: {product_title[:200]}",
+        "content": f"@here new listing spotted: **{product_title[:200]}**",
         "embeds": [embed],
     }
     _post(webhook_url, payload)
