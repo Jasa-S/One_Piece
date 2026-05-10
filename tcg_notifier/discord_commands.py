@@ -21,7 +21,7 @@ from .state import _STATE_LOCK
 log = logging.getLogger(__name__)
 
 DISCORD_API = "https://discord.com/api/v10"
-MAX_MSG = 1900  # leave headroom below Discord's 2000-char limit
+MAX_MSG = 1900
 
 HELP_TEXT = """\
 **TCG Notifier commands:**
@@ -62,6 +62,19 @@ class _Discord:
     def __init__(self, token: str) -> None:
         self._s = requests.Session()
         self._s.headers["Authorization"] = f"Bot {token}"
+        self.bot_user_id: str | None = None
+
+    def get_bot_user_id(self) -> str | None:
+        """Fetch and cache the bot's own user ID so we can skip its messages."""
+        if self.bot_user_id:
+            return self.bot_user_id
+        try:
+            r = self._s.get(f"{DISCORD_API}/users/@me", timeout=10)
+            r.raise_for_status()
+            self.bot_user_id = r.json().get("id")
+        except Exception as e:
+            log.warning("Could not fetch bot user ID: %s", e)
+        return self.bot_user_id
 
     def messages(self, channel_id: str, after: str | None) -> list[dict]:
         params: dict[str, Any] = {"limit": 100}
@@ -72,7 +85,6 @@ class _Discord:
         return r.json()
 
     def reply(self, channel_id: str, content: str, reply_to: str) -> None:
-        """Send a reply, splitting into multiple messages if over MAX_MSG chars."""
         chunks = _split_message(content)
         for i, chunk in enumerate(chunks):
             payload = {"content": chunk}
@@ -85,7 +97,7 @@ class _Discord:
             elif r.status_code >= 300:
                 log.error("Discord send failed: %s %s", r.status_code, r.text[:200])
             if len(chunks) > 1:
-                time.sleep(0.5)  # avoid hitting rate limits when splitting
+                time.sleep(0.5)
 
     def react(self, channel_id: str, message_id: str, emoji: str) -> None:
         r = self._s.put(
@@ -148,7 +160,6 @@ class _Discord:
 # ---------------------------------------------------------------------------
 
 def _split_message(text: str, limit: int = MAX_MSG) -> list[str]:
-    """Split text into chunks at line boundaries, each under `limit` chars."""
     if len(text) <= limit:
         return [text]
     chunks: list[str] = []
@@ -171,7 +182,6 @@ def _split_message(text: str, limit: int = MAX_MSG) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _live_check_all(data: dict, defaults: Defaults) -> dict:
-    """Run a live stock check on every product and every known category URL."""
     from .checker import check_product
     session = requests.Session()
     tasks: list[tuple[str, str, Product]] = []
@@ -356,7 +366,6 @@ def _cmd_list(data: dict, live_stock: dict) -> str:
 
 
 def _cmd_status(stock_state_path: Path) -> str:
-    """Show when the background loop last ran a full check cycle."""
     last: str | None = None
     if stock_state_path.exists():
         try:
@@ -368,7 +377,6 @@ def _cmd_status(stock_state_path: Path) -> str:
         return "⚪ Bot is running. No completed check cycle recorded yet."
     try:
         dt = datetime.fromisoformat(last)
-        # Make it human-readable in UTC
         formatted = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
         delta_secs = int((datetime.now(timezone.utc) - dt).total_seconds())
         if delta_secs < 60:
@@ -511,6 +519,10 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
 
     discord_client = _Discord(token)
 
+    # Fetch the bot's own user ID so we can ignore its own messages
+    bot_user_id = discord_client.get_bot_user_id()
+    log.debug("Bot user ID: %s", bot_user_id)
+
     bot_state: dict = {}
     if state_path.exists():
         try:
@@ -518,7 +530,6 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
         except Exception:
             pass
 
-    # Load stock state + inject known_urls for !list
     stock_state: dict = {}
     if stock_state_path.exists():
         try:
@@ -535,24 +546,39 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
     last_id: str | None = bot_state.get("last_message_id")
 
     try:
-        messages = discord_client.messages(channel_id, after=last_id)
+        all_messages = discord_client.messages(channel_id, after=last_id)
     except Exception as e:
         log.error("Failed to fetch Discord messages: %s", e)
         return
 
-    messages = [m for m in reversed(messages) if m["content"].strip().startswith("!")]
-
-    if not messages:
+    if not all_messages:
         return
 
-    config_changed = False
+    # Always advance the pointer to the NEWEST message in the batch,
+    # regardless of whether it's a command or a bot reply.
+    # This prevents old commands from being replayed every poll cycle.
+    newest_id = max(m["id"] for m in all_messages)
+
+    # Only process messages from humans (not from the bot itself)
+    command_messages = [
+        m for m in reversed(all_messages)
+        if m["content"].strip().startswith("!")
+        and (bot_user_id is None or m["author"].get("id") != bot_user_id)
+    ]
 
     def _save_state(last_message_id: str) -> None:
         bot_state["last_message_id"] = last_message_id
         with _STATE_LOCK:
             state_path.write_text(json.dumps(bot_state, indent=2))
 
-    for msg in messages:
+    if not command_messages:
+        # No commands to process, but still advance the pointer
+        _save_state(newest_id)
+        return
+
+    config_changed = False
+
+    for msg in command_messages:
         mid = msg["id"]
         content = msg["content"].strip()
         log.info("Command message: %s", content[:120])
@@ -605,7 +631,8 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
         except Exception as e:
             log.warning("Failed to send Discord reply: %s", e)
 
-        _save_state(mid)
+    # Advance pointer to the newest message in the entire batch (not just last command)
+    _save_state(newest_id)
 
     if config_changed:
         config_path.write_text(
@@ -614,7 +641,7 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
                 allow_unicode=True, sort_keys=False, default_flow_style=False,
             ),
             encoding="utf-8",
-        )
+            )
         log.info("config.yaml updated.")
 
 
