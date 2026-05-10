@@ -23,6 +23,7 @@ class Category:
     shop: str = ""
     link_selector: str = "a[href]"
     link_pattern: str | None = None  # optional regex matched against absolute URL
+    use_browser: bool = False         # set True for JS-rendered shops (Saturn, MediaMarkt…)
 
 
 @dataclass
