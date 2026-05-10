@@ -3,7 +3,12 @@ name: TCG Stock Check
 on:
   schedule:
     - cron: "*/5 * * * *"   # every 5 minutes
-  workflow_dispatch:          # allows manual trigger from the Actions tab
+  workflow_dispatch:
+    inputs:
+      test_ping:
+        description: "Send a test Discord ping instead of checking stock"
+        type: boolean
+        default: false
 
 jobs:
   check:
@@ -30,7 +35,12 @@ jobs:
       - name: Run stock check
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: python -m tcg_notifier --once
+        run: |
+          if [ "${{ github.event.inputs.test_ping }}" = "true" ]; then
+            python -m tcg_notifier --test
+          else
+            python -m tcg_notifier --once
+          fi
 
       - name: Save state
         run: |

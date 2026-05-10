@@ -108,6 +108,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default="config.yaml", help="Path to config YAML.")
     parser.add_argument("--state", default="state.json", help="Path to state file.")
     parser.add_argument("--once", action="store_true", help="Check once and exit.")
+    parser.add_argument("--test", action="store_true", help="Send a test ping to Discord and exit.")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
@@ -124,6 +125,21 @@ def main(argv: list[str] | None = None) -> int:
             config_path,
         )
         return 1
+
+    if args.test:
+        config = load_config(config_path)
+        from .notifier import _post
+        _post(config.webhook_url, {
+            "username": "TCG Stock Notifier",
+            "content": "Test ping — the notifier is set up and working!",
+            "embeds": [{
+                "title": "Connection test",
+                "description": "If you see this, Discord notifications are working correctly.",
+                "color": 0x3498DB,
+            }],
+        })
+        log.info("Test ping sent.")
+        return 0
 
     if args.once:
         config = load_config(config_path)
