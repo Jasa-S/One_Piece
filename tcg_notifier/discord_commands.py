@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
@@ -11,7 +13,8 @@ from urllib.parse import quote, urlparse
 import requests
 import yaml
 
-from .config import DEFAULT_IN_STOCK, DEFAULT_OOS
+from .checker import check_product
+from .config import DEFAULT_IN_STOCK, DEFAULT_OOS, Defaults, Product, is_naver_smartstore, load_config
 from .site_probe import probe
 
 log = logging.getLogger(__name__)
@@ -38,7 +41,7 @@ https://shop.de/collections/pokemon /de/product/ Pokemon @ Shop
 
 
 Other commands:
-`!list` — show everything currently tracked
+`!list` — live stock check + full status of everything tracked
 `!remove <name>` — stop tracking (partial name match)
 `!setpattern <name> /pattern/` — set or update link pattern for a category
 `!reset` — deletes all tracked items and purges ALL channel messages
@@ -134,6 +137,78 @@ class _Discord:
 
 
 # ---------------------------------------------------------------------------
+# Live stock check helper (used by !list)
+# ---------------------------------------------------------------------------
+
+def _live_check_all(data: dict, defaults: Defaults) -> dict:
+    """
+    Run a live stock check on every explicit product and every known category URL.
+    Returns an updated stock_state dict (same shape as state.json) with fresh results.
+    """
+    session = requests.Session()
+    tasks: list[tuple[str, str, Product]] = []  # (kind, key, stub)
+
+    # Explicit products
+    for p in (data.get("products") or []):
+        url = p.get("url", "")
+        if not url:
+            continue
+        stub = Product(
+            name=p.get("name", url),
+            url=url,
+            shop=p.get("shop", ""),
+            in_stock_text=p.get("in_stock_text") or list(DEFAULT_IN_STOCK),
+            out_of_stock_text=p.get("out_of_stock_text") or list(DEFAULT_OOS),
+            use_browser=p.get("use_browser", False) or is_naver_smartstore(url),
+        )
+        tasks.append(("product", url, stub))
+
+    # Category URLs (all known_urls from state)
+    cat_url_map: dict[str, str] = {}  # product_url -> category_url
+    for c in (data.get("categories") or []):
+        cat_url = c.get("url", "")
+        known = data.get("_state_known_urls", {}).get(cat_url, [])
+        for url in known:
+            stub = Product(
+                name=url,
+                url=url,
+                shop=c.get("shop", ""),
+                in_stock_text=list(DEFAULT_IN_STOCK),
+                out_of_stock_text=list(DEFAULT_OOS),
+                use_browser=c.get("use_browser", False) or is_naver_smartstore(url),
+            )
+            tasks.append(("category", cat_url, stub))
+            cat_url_map[url] = cat_url
+
+    if not tasks:
+        return {"products": {}, "categories": {}}
+
+    results: dict = {"products": {}, "categories": {}}
+
+    def _run(kind: str, key: str, stub: Product):
+        sess = None if stub.use_browser else session
+        result = check_product(stub, defaults, session=sess)
+        return kind, key, stub.url, result
+
+    with ThreadPoolExecutor(max_workers=defaults.max_workers) as pool:
+        futures = [pool.submit(_run, kind, key, stub) for kind, key, stub in tasks]
+        for fut in as_completed(futures):
+            try:
+                kind, key, url, result = fut.result()
+            except Exception as e:
+                log.warning("Live check failed for a URL: %s", e)
+                continue
+            if result is None:
+                continue
+            if kind == "product":
+                results["products"][url] = {"in_stock": result.in_stock}
+            else:  # category
+                results["categories"].setdefault(key, {"stock": {}})["stock"][url] = result.in_stock
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Command handlers
 # ---------------------------------------------------------------------------
 
@@ -197,10 +272,11 @@ def _cmd_add_category(data: dict, url: str, name: str, link_pattern_override: st
     return f"✅ Added category **{name}**\nProbe: {info['note']}.{pattern_note}{browser_note}"
 
 
-def _cmd_list(data: dict, stock_state: dict) -> str:
+def _cmd_list(data: dict, live_stock: dict) -> str:
+    """Render the full tracking list using freshly-checked stock data."""
     lines: list[str] = []
-    products_state = stock_state.get("products") or {}
-    categories_state = stock_state.get("categories") or {}
+    products_stock = live_stock.get("products") or {}
+    categories_stock = live_stock.get("categories") or {}
 
     # ---- explicit products ----
     products = data.get("products") or []
@@ -208,8 +284,8 @@ def _cmd_list(data: dict, stock_state: dict) -> str:
         available = sold_out = unknown = 0
         product_lines = []
         for p in products:
-            st = products_state.get(p.get("url", "")) or {}
-            if "in_stock" not in st:
+            st = products_stock.get(p.get("url", ""))
+            if st is None or "in_stock" not in st:
                 status, unknown = "⚪ unknown", unknown + 1
             elif st["in_stock"]:
                 status, available = "🟢 **in stock**", available + 1
@@ -220,7 +296,7 @@ def _cmd_list(data: dict, stock_state: dict) -> str:
         if available: parts.append(f"🟢 {available} available")
         if sold_out:  parts.append(f"🔴 {sold_out} sold out")
         if unknown:   parts.append(f"⚪ {unknown} unknown")
-        lines.append(f"**📦 Products — {len(products)} tracked — {' · '.join(parts) or 'none checked yet'}**")
+        lines.append(f"**📦 Products — {len(products)} tracked — {' · '.join(parts) or 'checking…'}**")
         lines.extend(product_lines)
 
     # ---- categories ----
@@ -230,24 +306,23 @@ def _cmd_list(data: dict, stock_state: dict) -> str:
             lines.append("")
         lines.append(f"**🗂️ Categories — {len(categories)} tracked**")
         for c in categories:
-            cs = categories_state.get(c.get("url", "")) or {}
-            known_urls: list = cs.get("known_urls") or []
-            stock: dict = cs.get("stock") or {}
+            cat_url = c.get("url", "")
+            # known_urls come from _state_known_urls injected before this call
+            known_urls: list = data.get("_state_known_urls", {}).get(cat_url) or []
+            stock: dict = (categories_stock.get(cat_url) or {}).get("stock") or {}
             total = len(known_urls)
 
-            if not cs.get("initialized"):
+            if total == 0:
                 lines.append(f"  🗂️ **{c.get('name','?')}** ({c.get('shop','?')}) — ⚪ not yet baselined")
                 continue
 
             in_stock_count  = sum(1 for v in stock.values() if v is True)
             out_stock_count = sum(1 for v in stock.values() if v is False)
-            unchecked       = total - len(stock)
 
             parts = []
             if in_stock_count:  parts.append(f"🟢 {in_stock_count} in stock")
             if out_stock_count: parts.append(f"🔴 {out_stock_count} sold out")
-            if unchecked:       parts.append(f"⚪ {unchecked} unchecked")
-            summary = " · ".join(parts) if parts else "none checked yet"
+            summary = " · ".join(parts) if parts else "🔴 all sold out"
 
             lines.append(f"  🗂️ **{c.get('name','?')}** ({c.get('shop','?')}) — {total} listings — {summary}")
 
@@ -314,12 +389,22 @@ def _parse_commands(content: str) -> list[tuple[str, ...]]:
     return commands
 
 
-def _dispatch(data: dict, stock_state: dict, parts: tuple[str, ...]) -> tuple[str, bool]:
+def _dispatch(
+    data: dict,
+    stock_state: dict,
+    parts: tuple[str, ...],
+    defaults: Defaults | None = None,
+) -> tuple[str, bool]:
     cmd = parts[0].lower() if parts else ""
     if cmd == "!help":
         return HELP_TEXT, False
     if cmd == "!list":
-        return _cmd_list(data, stock_state), False
+        if defaults is not None:
+            log.info("!list: running live stock check…")
+            live_stock = _live_check_all(data, defaults)
+        else:
+            live_stock = stock_state
+        return _cmd_list(data, live_stock), False
     if cmd == "!remove":
         if len(parts) < 2:
             return "Usage: `!remove <name>`", False
@@ -368,35 +453,46 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
         log.error("discord.command_channel_id not configured in config.yaml.")
         return
 
-    discord = _Discord(token)
+    # Load defaults so !list can do a live stock check
+    try:
+        cfg = load_config(config_path)
+        defaults: Defaults | None = cfg.defaults
+    except Exception:
+        defaults = None
 
-    import json
+    discord_client = _Discord(token)
 
-    # Load bot state (only stores last_message_id — NOT stock data)
-    state: dict = {}
+    # Load bot state (last_message_id only)
+    bot_state: dict = {}
     if state_path.exists():
         try:
-            state = json.loads(state_path.read_text())
+            bot_state = json.loads(state_path.read_text())
         except Exception:
             pass
 
-    # Load stock state separately (written by __main__.py)
+    # Load stock state (written by __main__.py) for non-!list commands
     stock_state: dict = {}
     if stock_state_path.exists():
         try:
-            stock_state = json.loads(stock_state_path.read_text())
+            raw_stock = json.loads(stock_state_path.read_text())
+            stock_state = raw_stock
+            # Inject known_urls from state.json into raw (config data) so
+            # _cmd_list/_live_check_all can look them up via _state_known_urls
+            known_map: dict[str, list] = {}
+            for cat_key, cat_entry in (raw_stock.get("categories") or {}).items():
+                known_map[cat_key] = cat_entry.get("known_urls") or []
+            raw["_state_known_urls"] = known_map
         except Exception:
             pass
 
-    last_id: str | None = state.get("last_message_id")
+    last_id: str | None = bot_state.get("last_message_id")
 
     try:
-        messages = discord.messages(channel_id, after=last_id)
+        messages = discord_client.messages(channel_id, after=last_id)
     except Exception as e:
         log.error("Failed to fetch Discord messages: %s", e)
         return
 
-    # Only process command messages, oldest first
     messages = [m for m in reversed(messages) if m["content"].strip().startswith("!")]
 
     if not messages:
@@ -405,8 +501,8 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
     config_changed = False
 
     def _save_state(last_message_id: str) -> None:
-        state["last_message_id"] = last_message_id
-        state_path.write_text(json.dumps(state, indent=2))
+        bot_state["last_message_id"] = last_message_id
+        state_path.write_text(json.dumps(bot_state, indent=2))
 
     for msg in messages:
         mid = msg["id"]
@@ -417,16 +513,20 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
             log.info("Running !reset: clearing config and purging ALL messages.")
             raw["products"] = []
             raw["categories"] = []
-            deleted = discord.delete_all_messages(channel_id)
+            raw.pop("_state_known_urls", None)
+            deleted = discord_client.delete_all_messages(channel_id)
             log.info("Deleted %d messages.", deleted)
             try:
-                confirm = discord.post(channel_id, f"✅ **Bot reset successfully.** Config cleared and {deleted} messages deleted.")
+                confirm = discord_client.post(channel_id, f"✅ **Bot reset successfully.** Config cleared and {deleted} messages deleted.")
                 _save_state(confirm["id"])
             except Exception:
-                state.pop("last_message_id", None)
-                state_path.write_text(json.dumps(state, indent=2))
+                bot_state.pop("last_message_id", None)
+                state_path.write_text(json.dumps(bot_state, indent=2))
             config_path.write_text(
-                yaml.dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=False),
+                yaml.dump(
+                    {k: v for k, v in raw.items() if not k.startswith("_")},
+                    allow_unicode=True, sort_keys=False, default_flow_style=False,
+                ),
                 encoding="utf-8",
             )
             log.info("Reset complete.")
@@ -436,7 +536,7 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
         changed = False
         try:
             for cmd_parts in _parse_commands(content):
-                line_reply, line_changed = _dispatch(raw, stock_state, cmd_parts)
+                line_reply, line_changed = _dispatch(raw, stock_state, cmd_parts, defaults=defaults)
                 reply_lines.append(line_reply)
                 changed = changed or line_changed
         except Exception as e:
@@ -447,19 +547,19 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
         reply = "\n".join(reply_lines) or "Done."
 
         try:
-            discord.reply(channel_id, reply, reply_to=mid)
-            discord.react(channel_id, mid, "✅")
+            discord_client.reply(channel_id, reply, reply_to=mid)
+            discord_client.react(channel_id, mid, "✅")
         except Exception as e:
             log.warning("Failed to send Discord reply: %s", e)
 
-        # Write last_message_id to disk IMMEDIATELY after handling each message.
-        # This prevents re-processing the same message if the process restarts
-        # or if run() is called again before the loop finishes.
         _save_state(mid)
 
     if config_changed:
         config_path.write_text(
-            yaml.dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=False),
+            yaml.dump(
+                {k: v for k, v in raw.items() if not k.startswith("_")},
+                allow_unicode=True, sort_keys=False, default_flow_style=False,
+            ),
             encoding="utf-8",
         )
         log.info("config.yaml updated.")
