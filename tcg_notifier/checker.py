@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import requests
 from bs4 import BeautifulSoup
 
-from .config import Defaults, Product
+from .config import DEFAULT_USER_AGENT, Defaults, Product
 
 log = logging.getLogger(__name__)
 

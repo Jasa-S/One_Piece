@@ -9,6 +9,7 @@ class State:
 
     def __init__(self, path: Path) -> None:
         self.path = path
+        self._dirty = False
         self._data: dict = {"products": {}, "categories": {}}
         if path.exists():
             try:
@@ -22,10 +23,14 @@ class State:
                 # legacy flat shape: every key was a product URL
                 self._data["products"] = loaded
 
-    def _save(self) -> None:
+    def save(self) -> None:
+        """Write state to disk. Only writes if data has changed."""
+        if not self._dirty:
+            return
         self.path.write_text(
             json.dumps(self._data, indent=2, sort_keys=True), encoding="utf-8"
         )
+        self._dirty = False
 
     # ---- products ----
     def was_in_stock(self, url: str) -> bool:
@@ -33,7 +38,7 @@ class State:
 
     def update_product(self, url: str, in_stock: bool) -> None:
         self._data["products"][url] = {"in_stock": in_stock}
-        self._save()
+        self._dirty = True
 
     # ---- categories ----
     def known_urls(self, category_key: str) -> set[str]:
@@ -49,4 +54,4 @@ class State:
             "initialized": True,
             "known_urls": sorted(known),
         }
-        self._save()
+        self._dirty = True

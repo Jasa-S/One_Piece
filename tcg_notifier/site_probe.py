@@ -6,18 +6,16 @@ import re
 import requests
 from bs4 import BeautifulSoup
 
+from .config import DEFAULT_USER_AGENT
+
 log = logging.getLogger(__name__)
 
 _HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-    ),
+    "User-Agent": DEFAULT_USER_AGENT,
     "Accept-Language": "de-DE,de;q=0.9,en;q=0.6",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
-# Signals that indicate a JS-rendered or bot-protected page
 _JS_SIGNALS = [
     "Checking your browser",
     "cf-browser-verification",
@@ -25,7 +23,7 @@ _JS_SIGNALS = [
     "Enable JavaScript and cookies",
     "Please enable JavaScript",
     "Please enable cookies",
-    "__NEXT_DATA__",        # Next.js SPA with no SSR content
+    "__NEXT_DATA__",
 ]
 
 _KNOWN_PATTERNS: list[tuple[str, str]] = [
@@ -53,10 +51,10 @@ def probe(url: str) -> dict:
     """Probe a URL and return detection results.
 
     Returns a dict with:
-      needs_browser (bool)   – whether Playwright is required
+      needs_browser (bool)     – whether Playwright is required
       link_pattern  (str|None) – guessed product link filter for category pages
-      shop          (str)    – human-readable shop name
-      note          (str)    – explanation shown to the user
+      shop          (str)      – human-readable shop name
+      note          (str)      – explanation shown to the user
     """
     result: dict = {
         "needs_browser": False,
@@ -79,11 +77,9 @@ def probe(url: str) -> dict:
 
     html = resp.text
 
-    # Shopify detection (refine link_pattern if not already known from URL)
     if result["link_pattern"] is None and "cdn.shopify.com" in html:
         result["link_pattern"] = "/products/"
 
-    # Bot-protection / JS-framework detection
     for signal in _JS_SIGNALS:
         if signal in html:
             result["needs_browser"] = True

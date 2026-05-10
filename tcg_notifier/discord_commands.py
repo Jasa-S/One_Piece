@@ -75,7 +75,6 @@ class _Discord:
             timeout=10,
         )
         if r.status_code == 400:
-            # Reply failed (e.g. original message deleted) — send as plain message
             log.warning("Reply failed (%s), sending as plain message", r.status_code)
             self._s.post(
                 f"{DISCORD_API}/channels/{channel_id}/messages",
@@ -102,6 +101,15 @@ class _Discord:
         if r.status_code >= 300:
             log.warning("Delete failed: %s %s", r.status_code, r.text[:200])
 
+    def post(self, channel_id: str, content: str) -> dict:
+        r = self._s.post(
+            f"{DISCORD_API}/channels/{channel_id}/messages",
+            json={"content": content[:2000]},
+            timeout=10,
+        )
+        r.raise_for_status()
+        return r.json()
+
 
 # ---------------------------------------------------------------------------
 # Command handlers
@@ -117,8 +125,8 @@ def _cmd_add_product(data: dict, url: str, name: str) -> str:
         "name": name,
         "shop": info["shop"],
         "url": url,
-        "out_of_stock_text": DEFAULT_OOS,
-        "in_stock_text": DEFAULT_IN_STOCK,
+        "out_of_stock_text": list(DEFAULT_OOS),
+        "in_stock_text": list(DEFAULT_IN_STOCK),
     }
     if info["needs_browser"]:
         entry["use_browser"] = True
@@ -135,7 +143,6 @@ def _derive_link_pattern(category_url: str, product_url: str) -> str | None:
     prod_path = urlparse(product_url).path
     prod_segs = [s for s in prod_path.strip("/").split("/") if s]
 
-    # Find first diverging path segment
     diverge_idx = len(cat_segs)
     for i, (cs, ps) in enumerate(zip(cat_segs, prod_segs)):
         if cs != ps:
@@ -144,13 +151,10 @@ def _derive_link_pattern(category_url: str, product_url: str) -> str | None:
 
     if diverge_idx < len(prod_segs):
         diverging_seg = prod_segs[diverge_idx]
-        # If diverging segment looks like a generic path component (not a product slug/ID),
-        # use it as the pattern prefix
         if not re.search(r'\d', diverging_seg) and len(diverging_seg) <= 20:
             prefix = "/" + "/".join(prod_segs[:diverge_idx + 1]) + "/"
             return prefix
 
-    # Fall back to file extension (e.g. .html)
     prod_filename = prod_path.split("/")[-1]
     if "." in prod_filename:
         ext = prod_filename.rsplit(".", 1)[-1]
@@ -372,30 +376,27 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
             log.info("Running !reset: clearing config and purging messages.")
             raw["products"] = []
             raw["categories"] = []
-            config_changed = True
 
-            # Fetch recent messages (up to 100) and delete them
+            # Fetch and delete recent messages BEFORE posting confirmation,
+            # so the confirmation itself is not caught in the deletion sweep.
             all_msgs = discord.messages(channel_id, after=None)
             for m in all_msgs:
                 discord.delete_message(channel_id, m["id"])
 
-            # Send confirmation
-            discord._s.post(
-                f"{DISCORD_API}/channels/{channel_id}/messages",
-                json={"content": "✅ **Bot reset successfully.** Config cleared and recent messages deleted."},
-                timeout=10,
-            )
+            # Post confirmation and record its ID as the new last_message_id
+            # so the next run doesn't try to re-process it as a command.
+            try:
+                confirm = discord.post(channel_id, "✅ **Bot reset successfully.** Config cleared and recent messages deleted.")
+                state["last_message_id"] = confirm["id"]
+            except Exception:
+                state.pop("last_message_id", None)
 
-            # FIX: explicitly clear last_message_id so the bot is not stuck after reset
-            state.pop("last_message_id", None)
             state_path.write_text(json.dumps(state, indent=2))
-
-            if config_changed:
-                config_path.write_text(
-                    yaml.dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=False),
-                    encoding="utf-8",
-                )
-                log.info("config.yaml updated after reset.")
+            config_path.write_text(
+                yaml.dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=False),
+                encoding="utf-8",
+            )
+            log.info("Reset complete.")
             return
 
         reply_lines: list[str] = []

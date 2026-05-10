@@ -15,6 +15,11 @@ DEFAULT_IN_STOCK = [
     "Auf Lager", "Lieferbar", "Sofort lieferbar", "Add to cart",
 ]
 
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
+
 
 @dataclass
 class Product:
@@ -23,7 +28,7 @@ class Product:
     shop: str = ""
     in_stock_text: list[str] = field(default_factory=list)
     out_of_stock_text: list[str] = field(default_factory=list)
-    use_browser: bool = False  # set True for JS-rendered shops
+    use_browser: bool = False
 
 
 @dataclass
@@ -32,8 +37,8 @@ class Category:
     url: str
     shop: str = ""
     link_selector: str = "a[href]"
-    link_pattern: str | None = None  # optional regex matched against absolute URL
-    use_browser: bool = False         # set True for JS-rendered shops (Saturn, MediaMarkt…)
+    link_pattern: str | None = None
+    use_browser: bool = False
 
 
 @dataclass
@@ -41,10 +46,7 @@ class Defaults:
     check_interval_seconds: int = 300
     jitter_seconds: int = 60
     request_timeout_seconds: int = 20
-    user_agent: str = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-    )
+    user_agent: str = DEFAULT_USER_AGENT
 
 
 @dataclass
@@ -68,9 +70,20 @@ def load_config(path: Path) -> Config:
             "or set the DISCORD_WEBHOOK_URL environment variable."
         )
 
-    defaults = Defaults(**(data.get("defaults") or {}))
+    # Guard against unknown keys in defaults block
+    raw_defaults = data.get("defaults") or {}
+    known_defaults = {f.name for f in Defaults.__dataclass_fields__.values()}
+    filtered_defaults = {k: v for k, v in raw_defaults.items() if k in known_defaults}
+    defaults = Defaults(**filtered_defaults)
 
-    products = [Product(**p) for p in (data.get("products") or [])]
+    products = []
+    for p in (data.get("products") or []):
+        p = dict(p)
+        # Apply global defaults if not explicitly set in config
+        p.setdefault("in_stock_text", list(DEFAULT_IN_STOCK))
+        p.setdefault("out_of_stock_text", list(DEFAULT_OOS))
+        products.append(Product(**p))
+
     for p in products:
         if not p.in_stock_text and not p.out_of_stock_text:
             raise ValueError(
@@ -79,8 +92,6 @@ def load_config(path: Path) -> Config:
             )
 
     categories = [Category(**c) for c in (data.get("categories") or [])]
-
-    # ---> THE TWO LINES WERE REMOVED FROM HERE <---
 
     command_channel_id = str((data.get("discord") or {}).get("command_channel_id", "") or "")
 

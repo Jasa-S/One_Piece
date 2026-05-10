@@ -40,8 +40,8 @@ def _register_as_product(config: Config, raw: dict, category, url: str, title: s
     raw.setdefault("products", []).append(entry)
     config.products.append(Product(
         name=name, url=url, shop=category.shop,
-        out_of_stock_text=DEFAULT_OOS,
-        in_stock_text=DEFAULT_IN_STOCK,
+        out_of_stock_text=list(DEFAULT_OOS),
+        in_stock_text=list(DEFAULT_IN_STOCK),
         use_browser=category.use_browser,
     ))
     log.info("Auto-registered product: %s (%s)", name, url)
@@ -69,6 +69,9 @@ def _check_products(config: Config, state: State) -> None:
 
         state.update_product(product.url, result.in_stock)
 
+    # Batch-save once after all products are checked
+    state.save()
+
 
 def _check_categories(config: Config, state: State, raw: dict) -> bool:
     """Returns True if any new products were auto-registered into raw/config."""
@@ -87,7 +90,6 @@ def _check_categories(config: Config, state: State, raw: dict) -> bool:
             category.name, category.shop, len(current), len(known), len(new_urls),
         )
 
-        # Register every visible product as a tracked product (no-op if already registered)
         for url, title in current.items():
             if _register_as_product(config, raw, category, url, title):
                 config_changed = True
@@ -104,6 +106,8 @@ def _check_categories(config: Config, state: State, raw: dict) -> bool:
 
         state.update_category(category.url, set(current))
 
+    # Batch-save once after all categories are checked
+    state.save()
     return config_changed
 
 
@@ -115,7 +119,7 @@ def run_once(config: Config, state: State, config_path: Path, raw: dict) -> None
             yaml.dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=False),
             encoding="utf-8",
         )
-        log.info("config.yaml updated with %d newly registered products.", sum(1 for _ in raw.get("products", [])))
+        log.info("config.yaml updated with newly registered products.")
 
 
 def run_loop(config_path: Path, state_path: Path) -> None:
