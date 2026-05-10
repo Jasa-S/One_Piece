@@ -2,7 +2,7 @@
 # If running locally, paste your webhook URL here instead.
 discord:
   webhook_url: ""
-  command_channel_id: ""   # paste your Discord channel ID here (right-click channel -> Copy Channel ID)
+  command_channel_id: "1502947222981967904"
 
 defaults:
   check_interval_seconds: 300
