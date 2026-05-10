@@ -8,14 +8,14 @@ from urllib.parse import urlsplit
 import yaml
 
 DEFAULT_OOS = [
-    "Ausverkauft", "Nicht verfügbar", "Vergriffen",
-    "Derzeit nicht verfügbar", "Sold out", "Out of stock",
-    "품절", "일시품절",  # Korean: sold out / temporarily sold out
+    "Ausverkauft", "Nicht verf\u00fcgbar", "Vergriffen",
+    "Derzeit nicht verf\u00fcgbar", "Sold out", "Out of stock",
+    "\ud488\uc808", "\uc77c\uc2dc\ud488\uc808",  # Korean: sold out / temporarily sold out
 ]
 DEFAULT_IN_STOCK = [
     "In den Warenkorb", "In den Einkaufswagen",
     "Auf Lager", "Lieferbar", "Sofort lieferbar", "Add to cart",
-    "구매하기", "장바구니",  # Korean: buy now / add to cart
+    "\uad6c\ub9e4\ud558\uae30", "\uc7a5\ubc14\uad6c\ub2c8",  # Korean: buy now / add to cart
 ]
 
 DEFAULT_USER_AGENT = (
@@ -28,10 +28,19 @@ NAVER_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 
+# All Naver shop/store subdomains that require the browser + Korean stock logic.
+_NAVER_SHOP_HOSTS = (
+    "smartstore.naver.com",
+    "brand.naver.com",
+    "shopping.naver.com",
+    "oc.shopping.naver.com",
+)
+
 
 def is_naver_smartstore(url: str) -> bool:
+    """Return True for any Naver storefront URL that needs browser rendering."""
     host = urlsplit(url).netloc.lower()
-    return "smartstore.naver.com" in host
+    return any(host == h or host.endswith("." + h) for h in _NAVER_SHOP_HOSTS)
 
 
 @dataclass
@@ -60,9 +69,9 @@ class Defaults:
     jitter_seconds: int = 60
     request_timeout_seconds: int = 20
     user_agent: str = DEFAULT_USER_AGENT
-    max_workers: int = 6          # parallel HTTP product checks
-    max_retries: int = 3          # transient-error retries per product
-    retry_delay_seconds: float = 4.0  # wait between retries
+    max_workers: int = 6
+    max_retries: int = 3
+    retry_delay_seconds: float = 4.0
 
 
 @dataclass
@@ -96,7 +105,6 @@ def load_config(path: Path) -> Config:
         p = dict(p)
         p.setdefault("in_stock_text", list(DEFAULT_IN_STOCK))
         p.setdefault("out_of_stock_text", list(DEFAULT_OOS))
-        # Auto-enable browser for Naver Smartstore
         if is_naver_smartstore(p.get("url", "")):
             p["use_browser"] = True
         products.append(Product(**p))
