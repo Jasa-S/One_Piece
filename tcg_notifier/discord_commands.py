@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 
 DISCORD_API = "https://discord.com/api/v10"
 MAX_MSG = 1900
-DONE_EMOJI = "✅"
+DONE_EMOJI = "\u2705"
 
 HELP_TEXT = """\
 **TCG Notifier commands:**
@@ -30,8 +30,8 @@ HELP_TEXT = """\
 Single entry:
 `!add product <url> <name>`
 `!add category <url> <name>`
-`!add category <url> <product_example_url> <name>` ← auto-detects pattern
-`!add category <url> /link_pattern/ <name>` ← explicit pattern
+`!add category <url> <product_example_url> <name>` \u2190 auto-detects pattern
+`!add category <url> /link_pattern/ <name>` \u2190 explicit pattern
 
 Multiple entries in one message (block format):
 !add product
@@ -44,15 +44,16 @@ https://shop.de/collections/pokemon /de/product/ Pokemon @ Shop
 
 
 Other commands:
-`!list` — live stock check + full status of everything tracked
-`!status` — show when the last background check ran
-`!remove <name>` — stop tracking (partial name match)
-`!setpattern <name> /pattern/` — set or update link pattern for a category
-`!reset` — deletes all tracked items and purges ALL channel messages
-`!help` — show this message
+`!list` \u2014 live stock check + full status of everything tracked
+`!status` \u2014 show when the last background check ran
+`!remove <name>` \u2014 stop tracking (partial name match)
+`!setpattern <name> /pattern/` \u2014 set or update link pattern for a category
+`!debug <url>` \u2014 dump raw check result + page data for a URL (troubleshooting)
+`!reset` \u2014 deletes all tracked items and purges ALL channel messages
+`!help` \u2014 show this message
 
 The bot auto-detects whether a site needs a headless browser.
-Link pattern is optional — auto-detected when possible."""
+Link pattern is optional \u2014 auto-detected when possible."""
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +61,6 @@ Link pattern is optional — auto-detected when possible."""
 # ---------------------------------------------------------------------------
 
 def _already_handled(msg: dict, bot_user_id: str | None) -> bool:
-    """Return True if the bot already reacted with ✅ to this message."""
     for reaction in msg.get("reactions") or []:
         emoji = reaction.get("emoji") or {}
         if emoji.get("name") == DONE_EMOJI and reaction.get("me"):
@@ -69,7 +69,6 @@ def _already_handled(msg: dict, bot_user_id: str | None) -> bool:
 
 
 def _load_raw(config_path: Path) -> dict:
-    """Read config.yaml freshly from disk, returning an empty dict on failure."""
     try:
         return yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     except Exception as e:
@@ -282,8 +281,8 @@ def _cmd_add_product(data: dict, url: str, name: str) -> str:
         entry["use_browser"] = True
     products.append(entry)
     data["products"] = products
-    browser_note = " — ⚠️ site needs headless browser." if info["needs_browser"] else " — plain HTTP."
-    return f"✅ Added product **{name}**\nProbe: {info['note']}{browser_note}"
+    browser_note = " \u2014 \u26a0\ufe0f site needs headless browser." if info["needs_browser"] else " \u2014 plain HTTP."
+    return f"\u2705 Added product **{name}**\nProbe: {info['note']}{browser_note}"
 
 
 def _derive_link_pattern(category_url: str, product_url: str) -> str | None:
@@ -323,9 +322,9 @@ def _cmd_add_category(data: dict, url: str, name: str, link_pattern_override: st
         source = "provided" if link_pattern_override else "auto-detected"
         pattern_note = f" Link pattern: `{effective_pattern}` ({source})."
     else:
-        pattern_note = " No link pattern — send `!setpattern {name} /pattern/` to add one."
-    browser_note = " ⚠️ site needs headless browser." if info["needs_browser"] else ""
-    return f"✅ Added category **{name}**\nProbe: {info['note']}.{pattern_note}{browser_note}"
+        pattern_note = " No link pattern \u2014 send `!setpattern {name} /pattern/` to add one."
+    browser_note = " \u26a0\ufe0f site needs headless browser." if info["needs_browser"] else ""
+    return f"\u2705 Added category **{name}**\nProbe: {info['note']}.{pattern_note}{browser_note}"
 
 
 def _cmd_list(data: dict, live_stock: dict) -> str:
@@ -340,24 +339,24 @@ def _cmd_list(data: dict, live_stock: dict) -> str:
         for p in products:
             st = products_stock.get(p.get("url", ""))
             if st is None or "in_stock" not in st:
-                status, unknown = "⚪ unknown", unknown + 1
+                status, unknown = "\u26aa unknown", unknown + 1
             elif st["in_stock"]:
-                status, available = "🟢 **in stock**", available + 1
+                status, available = "\U0001f7e2 **in stock**", available + 1
             else:
-                status, sold_out = "🔴 sold out", sold_out + 1
-            product_lines.append(f"  📦 **{p.get('name','?')}** — {status}")
+                status, sold_out = "\U0001f534 sold out", sold_out + 1
+            product_lines.append(f"  \U0001f4e6 **{p.get('name','?')}** \u2014 {status}")
         parts = []
-        if available: parts.append(f"🟢 {available} available")
-        if sold_out:  parts.append(f"🔴 {sold_out} sold out")
-        if unknown:   parts.append(f"⚪ {unknown} unknown")
-        lines.append(f"**📦 Products — {len(products)} tracked — {' · '.join(parts) or 'checking…'}**")
+        if available: parts.append(f"\U0001f7e2 {available} available")
+        if sold_out:  parts.append(f"\U0001f534 {sold_out} sold out")
+        if unknown:   parts.append(f"\u26aa {unknown} unknown")
+        lines.append(f"**\U0001f4e6 Products \u2014 {len(products)} tracked \u2014 {' \u00b7 '.join(parts) or 'checking\u2026'}**")
         lines.extend(product_lines)
 
     categories = data.get("categories") or []
     if categories:
         if lines:
             lines.append("")
-        lines.append(f"**🗂️ Categories — {len(categories)} tracked**")
+        lines.append(f"**\U0001f5c2\ufe0f Categories \u2014 {len(categories)} tracked**")
         for c in categories:
             cat_url = c.get("url", "")
             known_urls: list = data.get("_state_known_urls", {}).get(cat_url) or []
@@ -365,26 +364,119 @@ def _cmd_list(data: dict, live_stock: dict) -> str:
             total = len(known_urls)
 
             if total == 0:
-                lines.append(f"  🗂️ **{c.get('name','?')}** ({c.get('shop','?')}) — ⚪ not yet baselined")
+                lines.append(f"  \U0001f5c2\ufe0f **{c.get('name','?')}** ({c.get('shop','?')}) \u2014 \u26aa not yet baselined")
                 continue
 
             in_stock_count  = sum(1 for v in stock.values() if v is True)
             out_stock_count = sum(1 for v in stock.values() if v is False)
 
             parts = []
-            if in_stock_count:  parts.append(f"🟢 {in_stock_count} in stock")
-            if out_stock_count: parts.append(f"🔴 {out_stock_count} sold out")
-            summary = " · ".join(parts) if parts else "🔴 all sold out"
+            if in_stock_count:  parts.append(f"\U0001f7e2 {in_stock_count} in stock")
+            if out_stock_count: parts.append(f"\U0001f534 {out_stock_count} sold out")
+            summary = " \u00b7 ".join(parts) if parts else "\U0001f534 all sold out"
 
-            lines.append(f"  🗂️ **{c.get('name','?')}** ({c.get('shop','?')}) — {total} listings — {summary}")
+            lines.append(f"  \U0001f5c2\ufe0f **{c.get('name','?')}** ({c.get('shop','?')}) \u2014 {total} listings \u2014 {summary}")
 
             in_stock_urls = [u for u, v in stock.items() if v is True]
             for url in in_stock_urls[:10]:
-                lines.append(f"    🟢 {url}")
+                lines.append(f"    \U0001f7e2 {url}")
             if len(in_stock_urls) > 10:
-                lines.append(f"    … and {len(in_stock_urls) - 10} more in stock")
+                lines.append(f"    \u2026 and {len(in_stock_urls) - 10} more in stock")
 
     return "\n".join(lines) if lines else "Nothing is being tracked yet."
+
+
+def _cmd_debug(url: str, defaults: Defaults | None) -> str:
+    """Fetch a URL with the browser and dump: check result, __NEXT_DATA__ top-level
+    keys + pageProps keys, and the first 800 chars of body text. Helps diagnose
+    false stock readings without needing server log access."""
+    from urllib.parse import urlsplit
+    from .browser import _browser_page, _check_naver_brand, _check_naver
+    from .config import is_naver_smartstore
+
+    host = urlsplit(url).netloc.lower()
+    stub = Product(
+        name=url, url=url,
+        in_stock_text=list(DEFAULT_IN_STOCK),
+        out_of_stock_text=list(DEFAULT_OOS),
+        use_browser=True,
+    )
+
+    lines = [f"\U0001f50d **Debug: ** `{url}`"]
+
+    try:
+        with _browser_page(url) as page:
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=20_000)
+            except Exception as e:
+                lines.append(f"\u26a0\ufe0f goto warning: {e}")
+
+            # --- __NEXT_DATA__ inspection ---
+            next_data_raw = None
+            try:
+                next_data_raw = page.eval_on_selector("#__NEXT_DATA__", "el => el.textContent")
+            except Exception:
+                pass
+
+            if next_data_raw:
+                try:
+                    nd = json.loads(next_data_raw)
+                    top_keys = list(nd.keys())
+                    pp_keys = list((nd.get("props") or {}).get("pageProps") or {})
+                    lines.append(f"**__NEXT_DATA__ top keys:** `{top_keys}`")
+                    lines.append(f"**pageProps keys:** `{pp_keys}`")
+
+                    # Dump first product-like object found
+                    pp = (nd.get("props") or {}).get("pageProps") or {}
+                    for k in ("product", "item", "productDetail", "detail"):
+                        obj = pp.get(k)
+                        if isinstance(obj, dict):
+                            snippet = {key: obj[key] for key in list(obj.keys())[:15]}
+                            lines.append(f"**pageProps.{k} (first 15 keys):** ```json\n{json.dumps(snippet, ensure_ascii=False, indent=2)[:600]}\n```")
+                            break
+                    else:
+                        lines.append("**No product/item/productDetail/detail key in pageProps.**")
+                        lines.append(f"**pageProps snippet:** ```json\n{json.dumps(pp, ensure_ascii=False)[:400]}\n```")
+                except Exception as e:
+                    lines.append(f"**__NEXT_DATA__ parse error:** {e}")
+                    lines.append(f"**Raw (first 300):** `{next_data_raw[:300]}`")
+            else:
+                lines.append("**No #__NEXT_DATA__ tag found on page.**")
+
+            # --- body text snippet ---
+            try:
+                body = page.inner_text("body")[:800]
+                lines.append(f"**Body text (first 800 chars):**\n```\n{body}\n```")
+            except Exception as e:
+                lines.append(f"**Body text error:** {e}")
+
+            # --- actual check result ---
+            if "brand.naver.com" in host:
+                in_stock, detail = _check_naver_brand(page, stub)
+            elif is_naver_smartstore(url):
+                in_stock, detail = _check_naver(page, stub)
+            else:
+                text = ""
+                try:
+                    text = page.inner_text("body").lower()
+                except Exception:
+                    pass
+                found_in = next((s for s in DEFAULT_IN_STOCK if s.lower() in text), None)
+                found_oos = next((s for s in DEFAULT_OOS if s.lower() in text), None)
+                if found_in:
+                    in_stock, detail = True, f"in-stock phrase: {found_in!r}"
+                elif found_oos:
+                    in_stock, detail = False, f"oos phrase: {found_oos!r}"
+                else:
+                    in_stock, detail = False, "no phrase matched"
+
+            stock_emoji = "\U0001f7e2" if in_stock else "\U0001f534"
+            lines.append(f"**Result:** {stock_emoji} `in_stock={in_stock}` \u2014 `{detail}`")
+
+    except Exception as e:
+        lines.append(f"\U0001f6a8 Browser error: {e}")
+
+    return "\n".join(lines)
 
 
 def _cmd_status(stock_state_path: Path) -> str:
@@ -396,7 +488,7 @@ def _cmd_status(stock_state_path: Path) -> str:
         except Exception:
             pass
     if not last:
-        return "⚪ Bot is running. No completed check cycle recorded yet."
+        return "\u26aa Bot is running. No completed check cycle recorded yet."
     try:
         dt = datetime.fromisoformat(last)
         formatted = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -407,9 +499,9 @@ def _cmd_status(stock_state_path: Path) -> str:
             ago = f"{delta_secs // 60}m ago"
         else:
             ago = f"{delta_secs // 3600}h {(delta_secs % 3600) // 60}m ago"
-        return f"🟢 Bot is running.\nLast check: **{formatted}** ({ago})"
+        return f"\U0001f7e2 Bot is running.\nLast check: **{formatted}** ({ago})"
     except Exception:
-        return f"🟢 Bot is running. Last check: {last}"
+        return f"\U0001f7e2 Bot is running. Last check: {last}"
 
 
 def _cmd_remove(data: dict, query: str) -> str:
@@ -423,7 +515,7 @@ def _cmd_remove(data: dict, query: str) -> str:
                 removed.append(i["name"])
         data[key] = after
     if removed:
-        return "✅ Removed: " + ", ".join(f"**{n}**" for n in removed)
+        return "\u2705 Removed: " + ", ".join(f"**{n}**" for n in removed)
     return f"Nothing found matching `{query}`."
 
 
@@ -435,7 +527,7 @@ def _cmd_setpattern(data: dict, query: str, pattern: str) -> str:
             c["link_pattern"] = pattern
             updated.append(c["name"])
     if updated:
-        return "✅ Pattern set to `" + pattern + "` for: " + ", ".join(f"**{n}**" for n in updated)
+        return "\u2705 Pattern set to `" + pattern + "` for: " + ", ".join(f"**{n}**" for n in updated)
     return f"No category found matching `{query}`."
 
 
@@ -479,14 +571,15 @@ def _dispatch(
         return HELP_TEXT, False
     if cmd == "!status":
         return _cmd_status(stock_state_path), False
+    if cmd == "!debug":
+        if len(parts) < 2:
+            return "Usage: `!debug <url>`", False
+        return _cmd_debug(parts[1], defaults), False
     if cmd == "!list":
-        # Always re-read config.yaml so !list reflects the latest saved state,
-        # not the snapshot taken at the start of this run() call.
         fresh = _load_raw(config_path)
-        # Re-inject the known URLs from state so category baselines show up.
         fresh["_state_known_urls"] = data.get("_state_known_urls", {})
         if defaults is not None:
-            log.info("!list: running live stock check…")
+            log.info("!list: running live stock check\u2026")
             live_stock = _live_check_all(fresh, defaults)
         else:
             live_stock = stock_state
@@ -613,7 +706,7 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
             deleted = discord_client.delete_all_messages(channel_id)
             log.info("Deleted %d messages.", deleted)
             try:
-                confirm = discord_client.post(channel_id, f"✅ **Bot reset successfully.** Config cleared and {deleted} messages deleted.")
+                confirm = discord_client.post(channel_id, f"\u2705 **Bot reset successfully.** Config cleared and {deleted} messages deleted.")
                 _save_state(confirm["id"])
             except Exception:
                 bot_state.pop("last_message_id", None)
@@ -642,7 +735,7 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
                 reply_lines.append(line_reply)
                 changed = changed or line_changed
         except Exception as e:
-            reply_lines.append(f"⚠️ Error: {e}")
+            reply_lines.append(f"\u26a0\ufe0f Error: {e}")
             log.exception("Command error")
 
         config_changed = config_changed or changed
