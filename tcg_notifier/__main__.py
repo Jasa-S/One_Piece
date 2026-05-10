@@ -15,41 +15,11 @@ import yaml
 from .browser import close_shared_browser
 from .category import fetch_category
 from .checker import check_product
-from .config import DEFAULT_IN_STOCK, DEFAULT_OOS, Config, Product, load_config
+from .config import Config, Product, load_config
 from .notifier import send_in_stock_alert, send_new_listing_alert
 from .state import State
 
 log = logging.getLogger("tcg_notifier")
-
-
-def _name_from_url(url: str) -> str:
-    slug = url.rstrip("/").split("/")[-1].rsplit(".", 1)[0].lstrip("_")
-    return slug.replace("-", " ").replace("_", " ").title() or url
-
-
-def _register_as_product(config: Config, raw: dict, category, url: str, title: str) -> bool:
-    """Add a category-discovered URL to the product watchlist. No-op if already tracked."""
-    if any(p.url == url for p in config.products):
-        return False
-    name = title.strip() if title.strip() else _name_from_url(url)
-    entry: dict = {
-        "name": name,
-        "shop": category.shop,
-        "url": url,
-        "out_of_stock_text": DEFAULT_OOS,
-        "in_stock_text": DEFAULT_IN_STOCK,
-    }
-    if category.use_browser:
-        entry["use_browser"] = True
-    raw.setdefault("products", []).append(entry)
-    config.products.append(Product(
-        name=name, url=url, shop=category.shop,
-        out_of_stock_text=list(DEFAULT_OOS),
-        in_stock_text=list(DEFAULT_IN_STOCK),
-        use_browser=category.use_browser,
-    ))
-    log.info("Auto-registered product: %s (%s)", name, url)
-    return True
 
 
 def _check_products(config: Config, state: State) -> None:
@@ -57,14 +27,12 @@ def _check_products(config: Config, state: State) -> None:
     Check all products in parallel.
 
     - HTTP products share a requests.Session per shop domain (keep-alive reuse).
-    - Browser products run in the shared Playwright browser (already thread-safe
-      because each call gets its own page/context).
+    - Browser products run in the shared Playwright browser.
     - Up to defaults.max_workers threads run concurrently.
     """
     if not config.products:
         return
 
-    # One shared HTTP session per shop domain to reuse TCP connections
     shop_sessions: dict[str, requests.Session] = defaultdict(requests.Session)
 
     def _check_one(product: Product):
@@ -99,12 +67,14 @@ def _check_products(config: Config, state: State) -> None:
     state.save()
 
 
-def _check_categories(config: Config, state: State, raw: dict) -> bool:
-    """Check all categories in parallel. Returns True if config changed."""
-    if not config.categories:
-        return False
+def _check_categories(config: Config, state: State) -> None:
+    """Check all categories in parallel and alert on new listings.
 
-    config_changed = False
+    Does NOT register found URLs as products — categories are purely for
+    new-listing notifications.
+    """
+    if not config.categories:
+        return
 
     def _check_one(category):
         return category, fetch_category(category, config.defaults)
@@ -130,39 +100,25 @@ def _check_categories(config: Config, state: State, raw: dict) -> bool:
                 category.name, category.shop, len(current), len(known), len(new_urls),
             )
 
-            nonlocal config_changed
-            for url, title in current.items():
-                if _register_as_product(config, raw, category, url, title):
-                    config_changed = True
-
             if state.is_category_initialized(category.url):
                 for url in new_urls:
                     log.info("Sending new-listing alert for %s", url)
                     send_new_listing_alert(config.webhook_url, category, url, current[url])
-            elif new_urls:
+            elif current:
                 log.info("%s: first run — %d items baselined.", category.name, len(current))
 
             state.update_category(category.url, set(current))
 
     state.save()
-    return config_changed
 
 
 def run_once(config: Config, state: State, config_path: Path, raw: dict) -> None:
-    # Run products and categories concurrently using two sub-threads
-    from concurrent.futures import ThreadPoolExecutor as _TPE
-    with _TPE(max_workers=2) as pool:
+    # Run products and categories concurrently
+    with ThreadPoolExecutor(max_workers=2) as pool:
         prod_fut = pool.submit(_check_products, config, state)
-        cat_fut = pool.submit(_check_categories, config, state, raw)
-        prod_fut.result()          # re-raise any exception
-        changed = cat_fut.result()
-
-    if changed:
-        config_path.write_text(
-            yaml.dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=False),
-            encoding="utf-8",
-        )
-        log.info("config.yaml updated with newly registered products.")
+        cat_fut = pool.submit(_check_categories, config, state)
+        prod_fut.result()
+        cat_fut.result()
 
 
 def run_loop(config_path: Path, state_path: Path) -> None:
