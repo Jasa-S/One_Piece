@@ -5,10 +5,14 @@ import logging
 import random
 import sys
 import time
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+import requests
 import yaml
 
+from .browser import close_shared_browser
 from .category import fetch_category
 from .checker import check_product
 from .config import DEFAULT_IN_STOCK, DEFAULT_OOS, Config, Product, load_config
@@ -49,71 +53,110 @@ def _register_as_product(config: Config, raw: dict, category, url: str, title: s
 
 
 def _check_products(config: Config, state: State) -> None:
-    for product in config.products:
-        result = check_product(product, config.defaults)
-        if result is None:
-            continue
+    """
+    Check all products in parallel.
 
-        previously_in_stock = state.was_in_stock(product.url)
-        log.info(
-            "%s [%s] in_stock=%s (%s)",
-            product.name,
-            product.shop,
-            result.in_stock,
-            result.detail,
-        )
+    - HTTP products share a requests.Session per shop domain (keep-alive reuse).
+    - Browser products run in the shared Playwright browser (already thread-safe
+      because each call gets its own page/context).
+    - Up to defaults.max_workers threads run concurrently.
+    """
+    if not config.products:
+        return
 
-        if result.in_stock and not previously_in_stock:
-            log.info("Sending in-stock alert for %s", product.name)
-            send_in_stock_alert(config.webhook_url, product, result.detail)
+    # One shared HTTP session per shop domain to reuse TCP connections
+    shop_sessions: dict[str, requests.Session] = defaultdict(requests.Session)
 
-        state.update_product(product.url, result.in_stock)
+    def _check_one(product: Product):
+        session = None if product.use_browser else shop_sessions[product.shop]
+        return product, check_product(product, config.defaults, session=session)
 
-    # Batch-save once after all products are checked
+    with ThreadPoolExecutor(max_workers=config.defaults.max_workers) as pool:
+        futures = {pool.submit(_check_one, p): p for p in config.products}
+        for fut in as_completed(futures):
+            try:
+                product, result = fut.result()
+            except Exception as e:
+                log.error("Unexpected error checking %s: %s", futures[fut].name, e)
+                continue
+
+            if result is None:
+                log.warning("Skipping %s — all retries exhausted.", product.name)
+                continue
+
+            previously_in_stock = state.was_in_stock(product.url)
+            log.info(
+                "%s [%s] in_stock=%s (%s)",
+                product.name, product.shop, result.in_stock, result.detail,
+            )
+
+            if result.in_stock and not previously_in_stock:
+                log.info("Sending in-stock alert for %s", product.name)
+                send_in_stock_alert(config.webhook_url, product, result.detail)
+
+            state.update_product(product.url, result.in_stock)
+
     state.save()
 
 
 def _check_categories(config: Config, state: State, raw: dict) -> bool:
-    """Returns True if any new products were auto-registered into raw/config."""
+    """Check all categories in parallel. Returns True if config changed."""
+    if not config.categories:
+        return False
+
     config_changed = False
-    for category in config.categories:
-        found = fetch_category(category, config.defaults)
-        if found is None:
-            continue
 
-        current = {fp.url: fp.title for fp in found}
-        known = state.known_urls(category.url)
-        new_urls = sorted(set(current) - known)
+    def _check_one(category):
+        return category, fetch_category(category, config.defaults)
 
-        log.info(
-            "%s [%s] %d listings, %d previously known, %d new",
-            category.name, category.shop, len(current), len(known), len(new_urls),
-        )
+    with ThreadPoolExecutor(max_workers=max(2, config.defaults.max_workers // 2)) as pool:
+        futures = {pool.submit(_check_one, c): c for c in config.categories}
+        for fut in as_completed(futures):
+            try:
+                category, found = fut.result()
+            except Exception as e:
+                log.error("Unexpected error fetching category %s: %s", futures[fut].name, e)
+                continue
 
-        for url, title in current.items():
-            if _register_as_product(config, raw, category, url, title):
-                config_changed = True
+            if found is None:
+                continue
 
-        if state.is_category_initialized(category.url):
-            for url in new_urls:
-                log.info("Sending new-listing alert for %s", url)
-                send_new_listing_alert(config.webhook_url, category, url, current[url])
-        elif new_urls:
+            current = {fp.url: fp.title for fp in found}
+            known = state.known_urls(category.url)
+            new_urls = sorted(set(current) - known)
+
             log.info(
-                "%s: first run — saving %d items as baseline.",
-                category.name, len(current),
+                "%s [%s] %d listings, %d known, %d new",
+                category.name, category.shop, len(current), len(known), len(new_urls),
             )
 
-        state.update_category(category.url, set(current))
+            nonlocal config_changed
+            for url, title in current.items():
+                if _register_as_product(config, raw, category, url, title):
+                    config_changed = True
 
-    # Batch-save once after all categories are checked
+            if state.is_category_initialized(category.url):
+                for url in new_urls:
+                    log.info("Sending new-listing alert for %s", url)
+                    send_new_listing_alert(config.webhook_url, category, url, current[url])
+            elif new_urls:
+                log.info("%s: first run — %d items baselined.", category.name, len(current))
+
+            state.update_category(category.url, set(current))
+
     state.save()
     return config_changed
 
 
 def run_once(config: Config, state: State, config_path: Path, raw: dict) -> None:
-    _check_products(config, state)
-    changed = _check_categories(config, state, raw)
+    # Run products and categories concurrently using two sub-threads
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+    with _TPE(max_workers=2) as pool:
+        prod_fut = pool.submit(_check_products, config, state)
+        cat_fut = pool.submit(_check_categories, config, state, raw)
+        prod_fut.result()          # re-raise any exception
+        changed = cat_fut.result()
+
     if changed:
         config_path.write_text(
             yaml.dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=False),
@@ -123,23 +166,26 @@ def run_once(config: Config, state: State, config_path: Path, raw: dict) -> None
 
 
 def run_loop(config_path: Path, state_path: Path) -> None:
-    while True:
-        try:
-            raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-            config = load_config(config_path)
-        except Exception as e:
-            log.error("Failed to load config (%s); retrying in 60s.", e)
-            time.sleep(60)
-            continue
+    try:
+        while True:
+            try:
+                raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+                config = load_config(config_path)
+            except Exception as e:
+                log.error("Failed to load config (%s); retrying in 60s.", e)
+                time.sleep(60)
+                continue
 
-        state = State(state_path)
-        run_once(config, state, config_path, raw)
+            state = State(state_path)
+            run_once(config, state, config_path, raw)
 
-        sleep_for = config.defaults.check_interval_seconds + random.randint(
-            0, max(0, config.defaults.jitter_seconds)
-        )
-        log.info("Sleeping %ss until next round.", sleep_for)
-        time.sleep(sleep_for)
+            sleep_for = config.defaults.check_interval_seconds + random.randint(
+                0, max(0, config.defaults.jitter_seconds)
+            )
+            log.info("Sleeping %ss until next round.", sleep_for)
+            time.sleep(sleep_for)
+    finally:
+        close_shared_browser()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -187,15 +233,19 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.once:
-        raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-        config = load_config(config_path)
-        state = State(state_path)
-        run_once(config, state, config_path, raw)
+        try:
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            config = load_config(config_path)
+            state = State(state_path)
+            run_once(config, state, config_path, raw)
+        finally:
+            close_shared_browser()
     else:
         try:
             run_loop(config_path, state_path)
         except KeyboardInterrupt:
             log.info("Stopped.")
+            close_shared_browser()
     return 0
 
 
