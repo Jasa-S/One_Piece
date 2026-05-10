@@ -332,7 +332,9 @@ def _check_naver_brand(page, product: Product) -> tuple[bool | None, str]:
     if next_data_sold_out is False:
         return True, "__NEXT_DATA__ soldOut=false"
 
-    return True, "no OOS signal found (defaulting to in-stock)"
+    # Cannot determine stock — return None so state is not changed
+    log.warning("brand.naver: could not determine stock for %s — skipping state update", product.url)
+    return None, "could not determine stock (page unreadable)"
 
 
 def _extract_sold_out_targeted(data: dict) -> bool | None:
@@ -373,7 +375,7 @@ def _read_stock_fields(obj: dict) -> bool | None:
 
 
 # ---------------------------------------------------------------------------
-# Naver Smartstore
+# Naver Smartstore (smartstore.naver.com)
 # ---------------------------------------------------------------------------
 
 _NAVER_OOS_SELECTORS = [
@@ -404,6 +406,20 @@ def _check_naver(page, product: Product) -> tuple[bool | None, str]:
     except Exception:
         log.debug("Naver: networkidle timeout")
 
+    # 1. __NEXT_DATA__ — most reliable signal, try this first
+    try:
+        raw = page.eval_on_selector("#__NEXT_DATA__", "el => el.textContent")
+        if raw:
+            data = json.loads(raw)
+            sold_out = _extract_sold_out_targeted(data)
+            if sold_out is True:
+                return False, "__NEXT_DATA__ soldOut=true"
+            if sold_out is False:
+                return True, "__NEXT_DATA__ soldOut=false"
+    except Exception as exc:
+        log.debug("Naver smartstore: __NEXT_DATA__ check failed: %s", exc)
+
+    # 2. OOS CSS selectors
     for sel in _NAVER_OOS_SELECTORS:
         try:
             el = page.query_selector(sel)
@@ -412,6 +428,7 @@ def _check_naver(page, product: Product) -> tuple[bool | None, str]:
         except Exception:
             pass
 
+    # 3. In-stock CSS selectors
     for sel in _NAVER_IN_STOCK_SELECTORS:
         try:
             el = page.query_selector(sel)
@@ -420,9 +437,11 @@ def _check_naver(page, product: Product) -> tuple[bool | None, str]:
         except Exception:
             pass
 
+    # 4. Body text phrases
     try:
         body_text = page.inner_text("body")
     except Exception:
+        log.warning("Naver smartstore: failed to read body for %s — skipping state update", product.url)
         return None, "failed to read body text"
 
     text = body_text.lower()
@@ -434,6 +453,7 @@ def _check_naver(page, product: Product) -> tuple[bool | None, str]:
     if found_in:
         return True, f"in-stock phrase: {found_in!r}"
 
+    # 5. JSON-LD
     try:
         scripts = page.query_selector_all("script[type='application/ld+json']")
         for script in scripts:
@@ -448,19 +468,9 @@ def _check_naver(page, product: Product) -> tuple[bool | None, str]:
     except Exception:
         pass
 
-    try:
-        raw = page.eval_on_selector("#__NEXT_DATA__", "el => el.textContent")
-        if raw:
-            data = json.loads(raw)
-            sold_out = _extract_sold_out_targeted(data)
-            if sold_out is True:
-                return False, "__NEXT_DATA__ soldOut=true"
-            if sold_out is False:
-                return True, "__NEXT_DATA__ soldOut=false"
-    except Exception:
-        pass
-
-    return True, "no OOS signal found (defaulting to in-stock)"
+    # No signal found — return None so existing state is preserved
+    log.warning("Naver smartstore: could not determine stock for %s — skipping state update", product.url)
+    return None, "could not determine stock (no signal found)"
 
 
 # ---------------------------------------------------------------------------
@@ -488,8 +498,8 @@ def check_product_browser(product: Product) -> tuple[bool | None, str]:
             found_oos = next((s for s in product.out_of_stock_text if s.lower() in text), None)
             if found_oos:
                 return False, f"oos phrase matched: {found_oos!r}"
-            log.debug("Generic: no phrase matched for %s — defaulting to in-stock", product.url)
-            return True, "no configured phrase matched (defaulting to in-stock)"
+            log.debug("Generic: no phrase matched for %s — skipping state update", product.url)
+            return None, "no configured phrase matched"
 
     try:
         return _run_in_browser_thread(_work)
