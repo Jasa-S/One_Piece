@@ -22,10 +22,7 @@ _lock = threading.Lock()
 _pw_instance = None
 _browser_instance = None
 
-# How many times to reload a Naver brand page when we hit the queue/error page
-# before giving up and returning None.
 _NAVER_QUEUE_RETRIES = 4
-# Seconds to wait between queue-page reload attempts.
 _NAVER_QUEUE_RETRY_DELAY = 8
 
 # ---------------------------------------------------------------------------
@@ -111,7 +108,6 @@ def _dismiss_consent(page) -> None:
                 return
         except Exception:
             pass
-
     for text in _CONSENT_BUTTON_TEXTS:
         try:
             btn = page.get_by_role("button", name=re.compile(re.escape(text), re.IGNORECASE)).first
@@ -174,16 +170,10 @@ def close_shared_browser() -> None:
     log.info("Shared Playwright browser closed.")
 
 
-def _is_korean_site(url: str) -> bool:
-    """Return True for any Naver domain — both Smartstore and brand.naver.com."""
-    host = urlsplit(url).netloc.lower()
-    return is_naver_smartstore(url) or "naver.com" in host
-
-
 @contextmanager
 def _browser_page(url: str) -> Generator:
     """Open a new page in the shared browser, choosing locale/UA by URL."""
-    korean = _is_korean_site(url)
+    korean = is_naver_smartstore(url)  # True for brand.naver.com too (see config.py)
     locale = "ko-KR" if korean else "de-DE"
     ua = NAVER_USER_AGENT if korean else DEFAULT_USER_AGENT
     accept_lang = "ko-KR,ko;q=0.9" if korean else "de-DE,de;q=0.9,en;q=0.6"
@@ -216,7 +206,7 @@ def _browser_page(url: str) -> Generator:
 
 
 # ---------------------------------------------------------------------------
-# brand.naver.com — Next.js __NEXT_DATA__ approach
+# brand.naver.com — combined __NEXT_DATA__ + DOM/phrase check
 # ---------------------------------------------------------------------------
 
 _BRAND_NAVER_OOS_PHRASES = [
@@ -232,7 +222,7 @@ _BRAND_NAVER_IN_STOCK_PHRASES = [
 
 
 def _fetch_next_data(page, url: str) -> str | None:
-    """Navigate to url, wait for networkidle, and return #__NEXT_DATA__ text or None."""
+    """Navigate to url, wait for networkidle, return #__NEXT_DATA__ text or None."""
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=20_000)
     except Exception:
@@ -248,29 +238,53 @@ def _fetch_next_data(page, url: str) -> str | None:
 
 
 def _check_naver_brand(page, product: Product) -> tuple[bool | None, str]:
-    """Stock check for brand.naver.com."""
+    """Stock check for brand.naver.com.
+
+    Strategy (in order):
+    1. Try to get a definitive answer from __NEXT_DATA__ (soldOut / stockCount fields).
+       Retry up to _NAVER_QUEUE_RETRIES times if the page shows a queue/error.
+    2. Check body text for OOS phrases (품절 etc.) — reliable even without __NEXT_DATA__.
+    3. Check body text for in-stock phrases (구매하기 etc.).
+    4. Fall through to the same DOM-selector + phrase check used for Smartstore.
+       This is the same logic that correctly detects stock on other Naver products.
+
+    We never return None (unknown) unless the page genuinely failed to load at all.
+    """
     next_data_raw: str | None = _fetch_next_data(page, product.url)
 
+    # Retry only if __NEXT_DATA__ is completely absent (queue/error page).
     attempt = 0
     while not next_data_raw and attempt < _NAVER_QUEUE_RETRIES:
         attempt += 1
         log.warning(
-            "brand.naver: queue/error page detected for %s — retry %d/%d in %ds",
+            "brand.naver: no __NEXT_DATA__ for %s — retry %d/%d in %ds",
             product.url, attempt, _NAVER_QUEUE_RETRIES, _NAVER_QUEUE_RETRY_DELAY,
         )
         time.sleep(_NAVER_QUEUE_RETRY_DELAY)
         next_data_raw = _fetch_next_data(page, product.url)
 
-    if not next_data_raw:
+    # --- Step 1: __NEXT_DATA__ structured check (conclusive only) ---
+    if next_data_raw:
+        if attempt:
+            log.info("brand.naver: real page loaded after %d retry/retries", attempt)
+        try:
+            data = json.loads(next_data_raw)
+            sold_out = _extract_sold_out_targeted(data)
+            if sold_out is True:
+                return False, "__NEXT_DATA__ soldOut=true"
+            if sold_out is False:
+                # Confirmed in stock via structured data — still verify with body text
+                # before returning, to catch edge cases where the flag is stale.
+                log.debug("brand.naver: __NEXT_DATA__ soldOut=false, confirming via body")
+        except Exception as exc:
+            log.debug("brand.naver: __NEXT_DATA__ parse error: %s", exc)
+    else:
         log.warning(
-            "brand.naver: #__NEXT_DATA__ missing for %s after %d retries — giving up",
-            product.url, _NAVER_QUEUE_RETRIES,
+            "brand.naver: no __NEXT_DATA__ after %d retries for %s — continuing to DOM check",
+            _NAVER_QUEUE_RETRIES, product.url,
         )
-        return None, f"brand.naver: no #__NEXT_DATA__ after {_NAVER_QUEUE_RETRIES} retries — queue/error page"
 
-    if attempt:
-        log.info("brand.naver: real product page loaded after %d retry/retries", attempt)
-
+    # --- Step 2 & 3: Body text phrases ---
     body_text = ""
     try:
         body_text = page.inner_text("body")
@@ -279,28 +293,20 @@ def _check_naver_brand(page, product: Product) -> tuple[bool | None, str]:
 
     for phrase in _BRAND_NAVER_OOS_PHRASES:
         if phrase in body_text:
-            return False, f"body oos phrase: {phrase!r}"
-
-    try:
-        data = json.loads(next_data_raw)
-        sold_out = _extract_sold_out_targeted(data)
-        if sold_out is True:
-            return False, "__NEXT_DATA__ soldOut=true (targeted)"
-        if sold_out is False:
-            log.debug("brand.naver: __NEXT_DATA__ soldOut=false")
-    except Exception as exc:
-        log.debug("brand.naver: __NEXT_DATA__ parse failed: %s", exc)
+            return False, f"body OOS phrase: {phrase!r}"
 
     for phrase in _BRAND_NAVER_IN_STOCK_PHRASES:
         if phrase in body_text:
             return True, f"body in-stock phrase: {phrase!r}"
 
-    log.debug("brand.naver: falling back to DOM/text check for %s", product.url)
+    # --- Step 4: Full Naver DOM selector + JSON-LD fallback ---
+    # Same logic that works reliably for smartstore.naver.com.
+    log.debug("brand.naver: falling through to _check_naver DOM check for %s", product.url)
     return _check_naver(page, product)
 
 
 def _extract_sold_out_targeted(data: dict) -> bool | None:
-    """Walk __NEXT_DATA__ using known paths only — no broad deep search."""
+    """Walk __NEXT_DATA__ using known paths only."""
     try:
         page_props = (data.get("props") or {}).get("pageProps") or {}
 
@@ -327,7 +333,6 @@ def _extract_sold_out_targeted(data: dict) -> bool | None:
 
 
 def _read_stock_fields(obj: dict) -> bool | None:
-    """Check soldOut / stockCount / purchasable fields on a single dict."""
     if "soldOut" in obj:
         return bool(obj["soldOut"])
     if "isSoldOut" in obj:
@@ -342,7 +347,6 @@ def _read_stock_fields(obj: dict) -> bool | None:
 
 
 def _deep_search_sold_out(obj, depth: int) -> bool | None:
-    """Recursively search a JSON tree for stock fields."""
     if depth == 0 or not isinstance(obj, dict):
         return None
     result = _read_stock_fields(obj)
@@ -450,12 +454,10 @@ def _check_naver(page, product: Product) -> tuple[bool | None, str]:
 def _navigate_with_consent(page, url: str) -> None:
     if _is_borlabs_site(url):
         _inject_borlabs_consent(page, url)
-
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=20_000)
     except Exception:
         log.warning("domcontentloaded timed out for %s, using partial content", url)
-
     _dismiss_consent(page)
 
 
