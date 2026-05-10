@@ -109,42 +109,18 @@ def _browser_page(url: str) -> Generator:
 
 
 # ---------------------------------------------------------------------------
-# Naver queue / error page detection
-# ---------------------------------------------------------------------------
-
-# These phrases appear on Naver's waiting-room / traffic-throttle page.
-# When the real product page hasn't loaded, we must return None (unknown)
-# rather than a false in-stock based on nav text like 장바구니.
-_NAVER_BLOCK_PHRASES = [
-    "현재 서비스 접속이 불가합니다",  # "Service access is currently unavailable"
-    "접속이 불가",                      # "access unavailable" (shorter form)
-    "대기 중입니다",                    # "You are waiting"
-    "대기화면",                          # "Waiting screen"
-    "잠시 후 다시 접속",              # "Please try again later"
-]
-
-
-def _is_naver_block_page(body_text: str) -> bool:
-    """Return True if the page is Naver's queue/error page, not the real product."""
-    for phrase in _NAVER_BLOCK_PHRASES:
-        if phrase in body_text:
-            return True
-    return False
-
-
-# ---------------------------------------------------------------------------
 # brand.naver.com — Next.js __NEXT_DATA__ approach
 # ---------------------------------------------------------------------------
 
 _BRAND_NAVER_OOS_PHRASES = [
-    "품절되었습니다",   # "It is sold out"
-    "일시품절",         # "Temporarily out of stock"
-    "품절",             # "Sold out" (short form)
+    "\ud488\uc808\ub418\uc5c8\uc2b5\ub2c8\ub2e4",   # 품절되었습니다
+    "\uc77c\uc2dc\ud488\uc808",                       # 일시품절
+    "\ud488\uc808",                                   # 품절
 ]
 
 _BRAND_NAVER_IN_STOCK_PHRASES = [
-    "구매하기",   # "Buy now"
-    "장바구니",   # "Add to cart"
+    "\uad6c\ub9e4\ud558\uae30",   # 구매하기
+    "\uc7a5\ubc14\uad6c\ub2c8",   # 장바구니
 ]
 
 
@@ -153,11 +129,13 @@ def _check_naver_brand(page, product: Product) -> tuple[bool | None, str]:
 
     Priority order:
       1. Wait for networkidle so React has fully hydrated the DOM.
-      2. Detect Naver queue/error page — return None (unknown) immediately
-         so the previous known state is preserved rather than a false reading.
+      2. Require __NEXT_DATA__ to be present — if missing, the real product
+         page did not load (queue/error page). Return None (unknown) so the
+         previous known state is preserved.
       3. Body text: sold-out Korean phrases.
       4. __NEXT_DATA__ JSON: targeted path only.
-      5. Body text: in-stock phrases.
+      5. Body text: in-stock phrases — but ONLY inside #__NEXT_DATA__ page,
+         i.e. only reached when we confirmed the real page loaded.
       6. Fallback to generic Naver DOM/text check.
     """
     # --- 1. Wait for full React hydration ---
@@ -166,32 +144,43 @@ def _check_naver_brand(page, product: Product) -> tuple[bool | None, str]:
     except Exception:
         log.debug("brand.naver: networkidle timeout, proceeding with current DOM")
 
-    # --- 2. Queue / error page guard ---
+    # --- 2. __NEXT_DATA__ presence check (queue/error page guard) ---
+    # brand.naver.com is a Next.js app — every real product page has #__NEXT_DATA__.
+    # Naver's waiting-room / throttle page does NOT have it.
+    # If it's missing we cannot determine stock, so return None.
+    next_data_raw: str | None = None
+    try:
+        next_data_raw = page.eval_on_selector("#__NEXT_DATA__", "el => el.textContent")
+    except Exception:
+        pass
+
+    if not next_data_raw:
+        log.warning(
+            "brand.naver: #__NEXT_DATA__ missing for %s — likely queue/error page, skipping",
+            product.url,
+        )
+        return None, "brand.naver: no #__NEXT_DATA__ — queue/error page, result skipped"
+
+    # Real product page confirmed — now check stock.
     body_text = ""
     try:
         body_text = page.inner_text("body")
     except Exception as exc:
         log.debug("brand.naver: body text read failed: %s", exc)
 
-    if _is_naver_block_page(body_text):
-        log.warning("brand.naver: queue/error page detected for %s — skipping check", product.url)
-        return None, "Naver queue/error page — result skipped"
-
     # --- 3. Body text: sold-out phrases ---
     for phrase in _BRAND_NAVER_OOS_PHRASES:
         if phrase in body_text:
             return False, f"body oos phrase: {phrase!r}"
 
-    # --- 4. __NEXT_DATA__: targeted path only ---
+    # --- 4. __NEXT_DATA__ JSON: targeted path only ---
     try:
-        raw = page.eval_on_selector("#__NEXT_DATA__", "el => el.textContent")
-        if raw:
-            data = json.loads(raw)
-            sold_out = _extract_sold_out_targeted(data)
-            if sold_out is True:
-                return False, "__NEXT_DATA__ soldOut=true (targeted)"
-            if sold_out is False:
-                log.debug("brand.naver: __NEXT_DATA__ soldOut=false")
+        data = json.loads(next_data_raw)
+        sold_out = _extract_sold_out_targeted(data)
+        if sold_out is True:
+            return False, "__NEXT_DATA__ soldOut=true (targeted)"
+        if sold_out is False:
+            log.debug("brand.naver: __NEXT_DATA__ soldOut=false")
     except Exception as exc:
         log.debug("brand.naver: __NEXT_DATA__ parse failed: %s", exc)
 
@@ -248,7 +237,7 @@ def _read_stock_fields(obj: dict) -> bool | None:
 
 
 def _deep_search_sold_out(obj, depth: int) -> bool | None:
-    """Recursively search a JSON tree for stock fields. Not used by _check_naver_brand."""
+    """Recursively search a JSON tree for stock fields."""
     if depth == 0 or not isinstance(obj, dict):
         return None
     result = _read_stock_fields(obj)
@@ -302,15 +291,6 @@ def _check_naver(page, product: Product) -> tuple[bool | None, str]:
     except Exception:
         log.debug("Naver: networkidle timeout, proceeding with current DOM")
 
-    # Queue/error page guard (also applies to smartstore fallback path)
-    try:
-        body_text = page.inner_text("body")
-        if _is_naver_block_page(body_text):
-            log.warning("naver: queue/error page detected for %s — skipping", product.url)
-            return None, "Naver queue/error page — result skipped"
-    except Exception:
-        body_text = ""
-
     for sel in _NAVER_OOS_SELECTORS:
         try:
             el = page.query_selector(sel)
@@ -328,10 +308,11 @@ def _check_naver(page, product: Product) -> tuple[bool | None, str]:
             pass
 
     try:
-        text = body_text.lower() if body_text else page.inner_text("body").lower()
+        body_text = page.inner_text("body")
     except Exception:
         return None, "failed to read body text"
 
+    text = body_text.lower()
     found_oos = next((s for s in product.out_of_stock_text if s.lower() in text), None)
     if found_oos:
         return False, f"oos phrase matched: {found_oos!r}"
