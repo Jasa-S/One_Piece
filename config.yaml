@@ -40,4 +40,5 @@ categories:
 - name: Royal Pop
   shop: swatch.com
   url: https://www.swatch.com/de-de/watches/new-watch-releases/
+  link_pattern: \.html$
   use_browser: true
