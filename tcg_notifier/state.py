@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+import threading
+from datetime import datetime, timezone
 from pathlib import Path
+
+# Global lock so __main__.py and discord_commands.py never write simultaneously
+_STATE_LOCK = threading.Lock()
 
 
 class State:
@@ -21,13 +28,31 @@ class State:
                 self._data["categories"] = loaded.get("categories") or {}
             else:
                 self._data["products"] = loaded
+            # Preserve extra keys (e.g. last_checked_at)
+            for k, v in loaded.items():
+                if k not in ("products", "categories"):
+                    self._data[k] = v
 
-    def save(self) -> None:
-        if not self._dirty:
+    def save(self, last_checked_at: str | None = None) -> None:
+        if not self._dirty and last_checked_at is None:
             return
-        self.path.write_text(
-            json.dumps(self._data, indent=2, sort_keys=True), encoding="utf-8"
-        )
+        if last_checked_at:
+            self._data["last_checked_at"] = last_checked_at
+        # Atomic write: write to a temp file then rename so a crash never corrupts state
+        with _STATE_LOCK:
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                dir=self.path.parent, prefix=".state_tmp_", suffix=".json"
+            )
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+                    json.dump(self._data, fh, indent=2, sort_keys=True)
+                os.replace(tmp_path, self.path)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
         self._dirty = False
 
     # ---- explicit products ----
@@ -53,17 +78,14 @@ class State:
         entry = self._data["categories"].setdefault(category_key, {})
         entry["initialized"] = True
         entry["known_urls"] = sorted(known)
-        # Preserve existing stock data for URLs that are still present;
-        # remove stock data for URLs that have disappeared.
         existing_stock: dict = entry.get("stock") or {}
         entry["stock"] = {u: existing_stock[u] for u in known if u in existing_stock}
         self._dirty = True
 
     def was_category_url_in_stock(self, category_key: str, url: str) -> bool | None:
-        """Return True/False if we have a previous result, None if never checked."""
         entry = self._data["categories"].get(category_key) or {}
         stock = entry.get("stock") or {}
-        return stock.get(url)  # None if missing
+        return stock.get(url)
 
     def update_category_url_stock(self, category_key: str, url: str, in_stock: bool) -> None:
         entry = self._data["categories"].setdefault(category_key, {})
@@ -71,6 +93,8 @@ class State:
         self._dirty = True
 
     def category_stock_summary(self, category_key: str) -> dict:
-        """Return {url: in_stock} for all URLs with a known stock status."""
         entry = self._data["categories"].get(category_key) or {}
         return dict(entry.get("stock") or {})
+
+    def last_checked_at(self) -> str | None:
+        return self._data.get("last_checked_at")

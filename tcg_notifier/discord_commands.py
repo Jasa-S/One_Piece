@@ -6,6 +6,7 @@ import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse
@@ -13,13 +14,14 @@ from urllib.parse import quote, urlparse
 import requests
 import yaml
 
-from .checker import check_product
 from .config import DEFAULT_IN_STOCK, DEFAULT_OOS, Defaults, Product, is_naver_smartstore, load_config
 from .site_probe import probe
+from .state import _STATE_LOCK
 
 log = logging.getLogger(__name__)
 
 DISCORD_API = "https://discord.com/api/v10"
+MAX_MSG = 1900  # leave headroom below Discord's 2000-char limit
 
 HELP_TEXT = """\
 **TCG Notifier commands:**
@@ -42,6 +44,7 @@ https://shop.de/collections/pokemon /de/product/ Pokemon @ Shop
 
 Other commands:
 `!list` — live stock check + full status of everything tracked
+`!status` — show when the last background check ran
 `!remove <name>` — stop tracking (partial name match)
 `!setpattern <name> /pattern/` — set or update link pattern for a category
 `!reset` — deletes all tracked items and purges ALL channel messages
@@ -69,16 +72,20 @@ class _Discord:
         return r.json()
 
     def reply(self, channel_id: str, content: str, reply_to: str) -> None:
-        r = self._s.post(
-            f"{DISCORD_API}/channels/{channel_id}/messages",
-            json={"content": content[:2000], "message_reference": {"message_id": reply_to}},
-            timeout=10,
-        )
-        if r.status_code == 400:
-            log.warning("Reply failed (%s), sending as plain message", r.status_code)
-            self._s.post(f"{DISCORD_API}/channels/{channel_id}/messages", json={"content": content[:2000]}, timeout=10)
-        elif r.status_code >= 300:
-            log.error("Discord send failed: %s %s", r.status_code, r.text[:200])
+        """Send a reply, splitting into multiple messages if over MAX_MSG chars."""
+        chunks = _split_message(content)
+        for i, chunk in enumerate(chunks):
+            payload = {"content": chunk}
+            if i == 0:
+                payload["message_reference"] = {"message_id": reply_to}
+            r = self._s.post(f"{DISCORD_API}/channels/{channel_id}/messages", json=payload, timeout=10)
+            if r.status_code == 400 and i == 0:
+                log.warning("Reply failed (%s), sending as plain message", r.status_code)
+                self._s.post(f"{DISCORD_API}/channels/{channel_id}/messages", json={"content": chunk}, timeout=10)
+            elif r.status_code >= 300:
+                log.error("Discord send failed: %s %s", r.status_code, r.text[:200])
+            if len(chunks) > 1:
+                time.sleep(0.5)  # avoid hitting rate limits when splitting
 
     def react(self, channel_id: str, message_id: str, emoji: str) -> None:
         r = self._s.put(
@@ -137,18 +144,38 @@ class _Discord:
 
 
 # ---------------------------------------------------------------------------
+# Message splitting
+# ---------------------------------------------------------------------------
+
+def _split_message(text: str, limit: int = MAX_MSG) -> list[str]:
+    """Split text into chunks at line boundaries, each under `limit` chars."""
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    current_lines: list[str] = []
+    current_len = 0
+    for line in text.splitlines(keepends=True):
+        if current_len + len(line) > limit and current_lines:
+            chunks.append("".join(current_lines))
+            current_lines = []
+            current_len = 0
+        current_lines.append(line)
+        current_len += len(line)
+    if current_lines:
+        chunks.append("".join(current_lines))
+    return chunks
+
+
+# ---------------------------------------------------------------------------
 # Live stock check helper (used by !list)
 # ---------------------------------------------------------------------------
 
 def _live_check_all(data: dict, defaults: Defaults) -> dict:
-    """
-    Run a live stock check on every explicit product and every known category URL.
-    Returns an updated stock_state dict (same shape as state.json) with fresh results.
-    """
+    """Run a live stock check on every product and every known category URL."""
+    from .checker import check_product
     session = requests.Session()
-    tasks: list[tuple[str, str, Product]] = []  # (kind, key, stub)
+    tasks: list[tuple[str, str, Product]] = []
 
-    # Explicit products
     for p in (data.get("products") or []):
         url = p.get("url", "")
         if not url:
@@ -163,8 +190,6 @@ def _live_check_all(data: dict, defaults: Defaults) -> dict:
         )
         tasks.append(("product", url, stub))
 
-    # Category URLs (all known_urls from state)
-    cat_url_map: dict[str, str] = {}  # product_url -> category_url
     for c in (data.get("categories") or []):
         cat_url = c.get("url", "")
         known = data.get("_state_known_urls", {}).get(cat_url, [])
@@ -178,7 +203,6 @@ def _live_check_all(data: dict, defaults: Defaults) -> dict:
                 use_browser=c.get("use_browser", False) or is_naver_smartstore(url),
             )
             tasks.append(("category", cat_url, stub))
-            cat_url_map[url] = cat_url
 
     if not tasks:
         return {"products": {}, "categories": {}}
@@ -196,13 +220,13 @@ def _live_check_all(data: dict, defaults: Defaults) -> dict:
             try:
                 kind, key, url, result = fut.result()
             except Exception as e:
-                log.warning("Live check failed for a URL: %s", e)
+                log.warning("Live check failed: %s", e)
                 continue
             if result is None:
                 continue
             if kind == "product":
                 results["products"][url] = {"in_stock": result.in_stock}
-            else:  # category
+            else:
                 results["categories"].setdefault(key, {"stock": {}})["stock"][url] = result.in_stock
 
     return results
@@ -273,12 +297,10 @@ def _cmd_add_category(data: dict, url: str, name: str, link_pattern_override: st
 
 
 def _cmd_list(data: dict, live_stock: dict) -> str:
-    """Render the full tracking list using freshly-checked stock data."""
     lines: list[str] = []
     products_stock = live_stock.get("products") or {}
     categories_stock = live_stock.get("categories") or {}
 
-    # ---- explicit products ----
     products = data.get("products") or []
     if products:
         available = sold_out = unknown = 0
@@ -299,7 +321,6 @@ def _cmd_list(data: dict, live_stock: dict) -> str:
         lines.append(f"**📦 Products — {len(products)} tracked — {' · '.join(parts) or 'checking…'}**")
         lines.extend(product_lines)
 
-    # ---- categories ----
     categories = data.get("categories") or []
     if categories:
         if lines:
@@ -307,7 +328,6 @@ def _cmd_list(data: dict, live_stock: dict) -> str:
         lines.append(f"**🗂️ Categories — {len(categories)} tracked**")
         for c in categories:
             cat_url = c.get("url", "")
-            # known_urls come from _state_known_urls injected before this call
             known_urls: list = data.get("_state_known_urls", {}).get(cat_url) or []
             stock: dict = (categories_stock.get(cat_url) or {}).get("stock") or {}
             total = len(known_urls)
@@ -333,6 +353,33 @@ def _cmd_list(data: dict, live_stock: dict) -> str:
                 lines.append(f"    … and {len(in_stock_urls) - 10} more in stock")
 
     return "\n".join(lines) if lines else "Nothing is being tracked yet."
+
+
+def _cmd_status(stock_state_path: Path) -> str:
+    """Show when the background loop last ran a full check cycle."""
+    last: str | None = None
+    if stock_state_path.exists():
+        try:
+            data = json.loads(stock_state_path.read_text())
+            last = data.get("last_checked_at")
+        except Exception:
+            pass
+    if not last:
+        return "⚪ Bot is running. No completed check cycle recorded yet."
+    try:
+        dt = datetime.fromisoformat(last)
+        # Make it human-readable in UTC
+        formatted = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+        delta_secs = int((datetime.now(timezone.utc) - dt).total_seconds())
+        if delta_secs < 60:
+            ago = f"{delta_secs}s ago"
+        elif delta_secs < 3600:
+            ago = f"{delta_secs // 60}m ago"
+        else:
+            ago = f"{delta_secs // 3600}h {(delta_secs % 3600) // 60}m ago"
+        return f"🟢 Bot is running.\nLast check: **{formatted}** ({ago})"
+    except Exception:
+        return f"🟢 Bot is running. Last check: {last}"
 
 
 def _cmd_remove(data: dict, query: str) -> str:
@@ -394,10 +441,13 @@ def _dispatch(
     stock_state: dict,
     parts: tuple[str, ...],
     defaults: Defaults | None = None,
+    stock_state_path: Path = Path("state.json"),
 ) -> tuple[str, bool]:
     cmd = parts[0].lower() if parts else ""
     if cmd == "!help":
         return HELP_TEXT, False
+    if cmd == "!status":
+        return _cmd_status(stock_state_path), False
     if cmd == "!list":
         if defaults is not None:
             log.info("!list: running live stock check…")
@@ -453,7 +503,6 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
         log.error("discord.command_channel_id not configured in config.yaml.")
         return
 
-    # Load defaults so !list can do a live stock check
     try:
         cfg = load_config(config_path)
         defaults: Defaults | None = cfg.defaults
@@ -462,7 +511,6 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
 
     discord_client = _Discord(token)
 
-    # Load bot state (last_message_id only)
     bot_state: dict = {}
     if state_path.exists():
         try:
@@ -470,14 +518,13 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
         except Exception:
             pass
 
-    # Load stock state (written by __main__.py) for non-!list commands
+    # Load stock state + inject known_urls for !list
     stock_state: dict = {}
     if stock_state_path.exists():
         try:
-            raw_stock = json.loads(stock_state_path.read_text())
+            with _STATE_LOCK:
+                raw_stock = json.loads(stock_state_path.read_text())
             stock_state = raw_stock
-            # Inject known_urls from state.json into raw (config data) so
-            # _cmd_list/_live_check_all can look them up via _state_known_urls
             known_map: dict[str, list] = {}
             for cat_key, cat_entry in (raw_stock.get("categories") or {}).items():
                 known_map[cat_key] = cat_entry.get("known_urls") or []
@@ -502,7 +549,8 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
 
     def _save_state(last_message_id: str) -> None:
         bot_state["last_message_id"] = last_message_id
-        state_path.write_text(json.dumps(bot_state, indent=2))
+        with _STATE_LOCK:
+            state_path.write_text(json.dumps(bot_state, indent=2))
 
     for msg in messages:
         mid = msg["id"]
@@ -521,7 +569,8 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
                 _save_state(confirm["id"])
             except Exception:
                 bot_state.pop("last_message_id", None)
-                state_path.write_text(json.dumps(bot_state, indent=2))
+                with _STATE_LOCK:
+                    state_path.write_text(json.dumps(bot_state, indent=2))
             config_path.write_text(
                 yaml.dump(
                     {k: v for k, v in raw.items() if not k.startswith("_")},
@@ -536,7 +585,11 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
         changed = False
         try:
             for cmd_parts in _parse_commands(content):
-                line_reply, line_changed = _dispatch(raw, stock_state, cmd_parts, defaults=defaults)
+                line_reply, line_changed = _dispatch(
+                    raw, stock_state, cmd_parts,
+                    defaults=defaults,
+                    stock_state_path=stock_state_path,
+                )
                 reply_lines.append(line_reply)
                 changed = changed or line_changed
         except Exception as e:

@@ -7,6 +7,7 @@ import sys
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -23,7 +24,6 @@ log = logging.getLogger("tcg_notifier")
 
 
 def _check_products(config: Config, state: State) -> None:
-    """Check all explicit products in parallel."""
     if not config.products:
         return
 
@@ -63,8 +63,6 @@ def _check_category_stocks(
     urls: set[str],
     defaults: Defaults,
 ) -> dict[str, CheckResult | None]:
-    """Check stock for every URL in a category, in parallel."""
-    # Build a minimal Product stub for each URL so we can reuse check_product()
     from .config import DEFAULT_IN_STOCK, DEFAULT_OOS, is_naver_smartstore
     session = requests.Session()
     results: dict[str, CheckResult | None] = {}
@@ -95,13 +93,6 @@ def _check_category_stocks(
 
 
 def _check_categories(config: Config, state: State) -> None:
-    """Fetch all categories in parallel.
-
-    For each category:
-    - Alert on new listings.
-    - Check stock on every known URL.
-    - Alert immediately when a URL goes from out-of-stock -> in-stock.
-    """
     if not config.categories:
         return
 
@@ -129,7 +120,6 @@ def _check_categories(config: Config, state: State) -> None:
                 category.name, category.shop, len(current), len(known), len(new_urls),
             )
 
-            # Alert on new listings
             if state.is_category_initialized(category.url):
                 for url in new_urls:
                     log.info("New listing in %s: %s", category.name, url)
@@ -137,10 +127,8 @@ def _check_categories(config: Config, state: State) -> None:
             elif current:
                 log.info("%s: first run — %d items baselined.", category.name, len(current))
 
-            # Update the set of known URLs
             state.update_category(category.url, set(current))
 
-            # Check stock on all current URLs
             if not current:
                 continue
 
@@ -154,7 +142,6 @@ def _check_categories(config: Config, state: State) -> None:
                 previously = state.was_category_url_in_stock(category.url, url)
 
                 if result.in_stock and previously is not True:
-                    # Came in stock (or never checked before and is in stock)
                     log.info("Category in-stock alert: %s — %s", category.name, url)
                     send_category_in_stock_alert(
                         config.webhook_url, category, url, title, result.detail
@@ -171,6 +158,8 @@ def run_once(config: Config, state: State) -> None:
         cat_fut = pool.submit(_check_categories, config, state)
         prod_fut.result()
         cat_fut.result()
+    # Stamp the time of the last completed check cycle
+    state.save(last_checked_at=datetime.now(timezone.utc).isoformat())
 
 
 def run_loop(config_path: Path, state_path: Path) -> None:
