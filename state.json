@@ -145,5 +145,150 @@
       ]
     }
   },
-  "products": {}
+  "products": {
+    "https://www.saturn.de/de/product/_pokemon-10603-pkm-kp085-accessory-pouch-collecti-sammelkarten-set-2980565.html": {
+      "in_stock": false
+    },
+    "https://www.saturn.de/de/product/_pokemon-11077-kp10-ewige-rivalen-booster-fix36-sammelkarten-2988490.html": {
+      "in_stock": false
+    },
+    "https://www.saturn.de/de/product/_pokemon-12918-me01-mega-entwicklung-top-trainer-box-guardevoir-sammelkartenspiel-3003328.html": {
+      "in_stock": false
+    },
+    "https://www.saturn.de/de/product/_pokemon-14234-pkm-kp105-mini-tin-de-sammelkartenspiel-2992657.html": {
+      "in_stock": false
+    },
+    "https://www.saturn.de/de/product/_pokemon-41092-cynthias-knakrack-ex-premium-k-mbe3-sammelkarten-2988491.html": {
+      "in_stock": false
+    },
+    "https://www.saturn.de/de/product/_the-pokemon-company-int-10511-pokemon-kp085-binder-collection-mbe3-sammelkarten-2966410.html": {
+      "in_stock": false
+    },
+    "https://www.saturn.de/de/product/_the-pokemon-company-int-10532-pokemon-kp085-top-trainer-box-mbe4-sammelkarten-2965784.html": {
+      "in_stock": false
+    },
+    "https://www.saturn.de/de/product/_the-pokemon-company-int-10544-pokemon-kp085-poster-collection-mbe6-sammelkarten-2965785.html": {
+      "in_stock": false
+    },
+    "https://www.saturn.de/de/product/_the-pokemon-company-int-10566-pokemon-mini-tin-box-fix8-karmesin-and-purpur-prismatische-entwicklungen-sammelkarten-2972603.html": {
+      "in_stock": false
+    },
+    "https://www.saturn.de/de/product/_the-pokemon-company-int-10684-pokemon-weltmeisterschaftsdeck-2024-sammelkarten-2973281.html": {
+      "in_stock": false
+    },
+    "https://www.saturn.de/de/product/_the-pokemon-company-int-20305-pkm-v-box-de-sortiert-2459607.html": {
+      "in_stock": false
+    },
+    "https://www.saturn.de/de/product/_the-pokemon-company-int-20312-pokemon-top-trainer-box-sammelkarten-2911894.html": {
+      "in_stock": false
+    },
+    "https://www.saturn.de/de/product/_the-pokemon-company-int-41079-pokemon-kp09-top-trainer-box-sammelkarten-2974734.html": {
+      "in_stock": false
+    },
+    "https://www.saturn.de/de/product/_the-pokemon-company-int-45431-pokemon-swsh12-booster-de-sammelkarten-2834334.html": {
+      "in_stock": false
+    },
+    "https://www.saturn.de/de/product/_the-pokemon-company-int-45557-pokemon-kp035-poster-box-sammelkarten-2885372.html": {
+      "in_stock": false
+    },
+    "https://www.saturn.de/de/product/_the-pokemon-company-int-45569-pokemon-kp01-booster-de-spielset-2857592.html": {
+      "in_stock": false
+    },
+    "https://www.saturn.de/de/product/_the-pokemon-company-int-45865-pokemon-ex-kampfdeck-juli-sammelkarten-2933604.html": {
+      "in_stock": false
+    },
+    "https://www.saturn.de/de/product/_the-pokemon-company-int-45935-pkm-kp07-stellarkrone-booster-sammelkarten-2951644.html": {
+      "in_stock": false
+    },
+    "https://www.saturn.de/de/product/_the-pokemon-company-int-pkm-kp065-top-trainer-box-de-sammelkartenspiel-2936729.html": {
+      "in_stock": false
+    },
+    "https://www.saturn.de/de/product/_the-pokemon-company-int-pokemon-ex-premium-kollektion-sammelkarten-2977298.html": {
+      "in_stock": false
+    },
+    "https://www.saturn.de/de/product/_the-pokemon-company-int-pokemon-spezial-kollektion-sammelkarten-2977301.html": {
+      "in_stock": false
+    },
+    "https://www.swatch.com/de-de/berry-reflective-yvs538/YVS538.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/blue-reflective-yvs539/YVS539.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/degas-s-dancers-so28z131/SO28Z131.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/flower-hat-sscu09p100/SSCU09P100.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/iridescently-blue-syxs164/SYXS164.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/iridescently-peach-syxs166/SYXS166.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/klee-s-bavarian-don-giovanni-so28z703/SO28Z703.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/medusae-pay-sscu09l101-6000/SSCU09L101-6000.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/medusae-sscu09l100/SSCU09L100.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/monet-s-palazzo-ducale-pay-so29z153-6000/SO29Z153-6000.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/monet-s-palazzo-ducale-so29z150/SO29Z150.html": {
+      "in_stock": false
+    },
+    "https://www.swatch.com/de-de/mother-like-no-other-ss08z106g/SS08Z106G.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/pacific-sea-nettle-sscu09o100/SSCU09O100.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/paradise-bloom-ss08b106/SS08B106.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/paradise-canopy-ss08g112/SS08G112.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/paradise-mist-ss08g111/SS08G111.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/paradise-petals-ss08p113/SS08P113.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/pollock-s-alchemy-suoz366/SUOZ366.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/pondering-patterns-ss07s155/SS07S155.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/riding-the-clouds-suoz369/SUOZ369.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/sea-wasp-pay-sscu09n101-6000/SSCU09N101-6000.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/sea-wasp-sscu09n100/SSCU09N100.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/shimmering-waters-ss07s157m/SS07S157M.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/sky-reflective-yvs541/YVS541.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/swatch-encyclopedia-s399000001/S399000001.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/the-charm-of-mom-ysz101g/YSZ101G.html": {
+      "in_stock": true
+    },
+    "https://www.swatch.com/de-de/up-in-smoke-sb03z103/SB03Z103.html": {
+      "in_stock": true
+    }
+  }
 }
