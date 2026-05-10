@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -108,6 +109,120 @@ def _browser_page(url: str) -> Generator:
 
 
 # ---------------------------------------------------------------------------
+# brand.naver.com — Next.js __NEXT_DATA__ approach
+# ---------------------------------------------------------------------------
+
+def _check_naver_brand(page, product: Product) -> tuple[bool | None, str]:
+    """Stock check for brand.naver.com using the embedded __NEXT_DATA__ JSON.
+
+    brand.naver.com is a Next.js app. It embeds the full product payload
+    (including a top-level `soldOut` boolean) in <script id="__NEXT_DATA__">
+    before any React hydration. This is the most reliable signal available:
+    it is set by the server, not by client-side JS, so it reflects the true
+    stock state and is not confused by nav/header buttons that also contain
+    the Korean buy phrase even on sold-out pages.
+
+    Strategy:
+      1. Wait for the __NEXT_DATA__ script tag to appear (fast, server-rendered).
+      2. Parse the JSON and look for soldOut / stockCount / purchasable fields.
+      3. Fall back to the Naver smartstore DOM/text checks if parsing fails.
+    """
+    try:
+        page.wait_for_selector("#__NEXT_DATA__", timeout=15_000)
+    except Exception:
+        log.debug("brand.naver: __NEXT_DATA__ not found within timeout")
+
+    # --- 1. Parse __NEXT_DATA__ JSON ---
+    try:
+        raw = page.eval_on_selector("#__NEXT_DATA__", "el => el.textContent")
+        if raw:
+            data = json.loads(raw)
+            sold_out = _extract_sold_out(data)
+            if sold_out is True:
+                return False, "__NEXT_DATA__ soldOut=true"
+            if sold_out is False:
+                return True, "__NEXT_DATA__ soldOut=false"
+    except Exception as exc:
+        log.debug("brand.naver: __NEXT_DATA__ parse failed: %s", exc)
+
+    # --- 2. Fallback: networkidle + DOM/text checks (same as smartstore) ---
+    log.debug("brand.naver: falling back to DOM/text check for %s", product.url)
+    return _check_naver(page, product)
+
+
+def _extract_sold_out(data: dict) -> bool | None:
+    """Walk the __NEXT_DATA__ tree to find soldOut / stockCount / purchasable.
+
+    Returns True  -> definitely sold out
+            False -> definitely in stock
+            None  -> could not determine
+    """
+    # Flatten all JSON values into a searchable string as last resort,
+    # but first do a targeted walk of known paths.
+    try:
+        props = data.get("props", {})
+        page_props = props.get("pageProps", {})
+
+        # Common path: pageProps.product.soldOut
+        for key in ("product", "item", "productDetail", "detail"):
+            obj = page_props.get(key)
+            if isinstance(obj, dict):
+                result = _read_stock_fields(obj)
+                if result is not None:
+                    return result
+
+        # Sometimes nested under pageProps.initialState or pageProps.dehydratedState
+        for key in ("initialState", "dehydratedState", "initialData"):
+            obj = page_props.get(key)
+            if isinstance(obj, dict):
+                result = _deep_search_sold_out(obj, depth=4)
+                if result is not None:
+                    return result
+
+        # Broad deep search as last resort
+        return _deep_search_sold_out(data, depth=6)
+
+    except Exception:
+        return None
+
+
+def _read_stock_fields(obj: dict) -> bool | None:
+    """Check soldOut / stockCount / purchasable fields on a single dict."""
+    if "soldOut" in obj:
+        return bool(obj["soldOut"])
+    if "isSoldOut" in obj:
+        return bool(obj["isSoldOut"])
+    if "purchasable" in obj:
+        return not bool(obj["purchasable"])
+    if "stockCount" in obj:
+        return int(obj["stockCount"]) <= 0
+    if "stock" in obj and isinstance(obj["stock"], (int, float)):
+        return int(obj["stock"]) <= 0
+    return None
+
+
+def _deep_search_sold_out(obj, depth: int) -> bool | None:
+    """Recursively search a JSON tree for stock fields, up to `depth` levels."""
+    if depth == 0 or not isinstance(obj, dict):
+        return None
+    result = _read_stock_fields(obj)
+    if result is not None:
+        return result
+    for v in obj.values():
+        if isinstance(v, dict):
+            result = _deep_search_sold_out(v, depth - 1)
+            if result is not None:
+                return result
+        elif isinstance(v, list):
+            for item in v:
+                if isinstance(item, dict):
+                    result = _deep_search_sold_out(item, depth - 1)
+                    if result is not None:
+                        return result
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Naver Smartstore helpers
 # ---------------------------------------------------------------------------
 
@@ -129,19 +244,23 @@ _NAVER_OOS_SELECTORS = [
     "#SOLD_OUT",
 ]
 
+# Scoped to the main product area to avoid matching nav/header buy buttons.
 _NAVER_IN_STOCK_SELECTORS = [
-    # The purchase / cart button when enabled
-    "button[class*='btn'][class*='buy']:not([disabled]):not([aria-disabled='true'])",
-    "button[class*='purchase']:not([disabled])",
-    "button[class*='cart']:not([disabled])",
-    # Naver's own data-nclick tags for buy actions
-    "[data-nclick*='buy']:not([disabled])",
-    "[data-nclick*='addCart']:not([disabled])",
+    # Purchase / cart buttons scoped to main content area
+    "main button[class*='buy']:not([disabled]):not([aria-disabled='true'])",
+    "main button[class*='purchase']:not([disabled]):not([aria-disabled='true'])",
+    "main button[class*='cart']:not([disabled]):not([aria-disabled='true'])",
+    # Naver's own data-nclick buy actions, scoped away from header/nav
+    "main [data-nclick*='buy']:not([disabled])",
+    "main [data-nclick*='addCart']:not([disabled])",
+    # Fallback without main scope (less reliable)
+    "#content button[class*='buy']:not([disabled]):not([aria-disabled='true'])",
+    "#product-content [data-nclick*='buy']:not([disabled])",
 ]
 
 
 def _check_naver(page, product: Product) -> tuple[bool | None, str]:
-    """Naver-specific stock check.
+    """Naver Smartstore-specific stock check.
 
     Strategy:
     1. Wait for networkidle so React has fully rendered the stock state.
@@ -149,9 +268,6 @@ def _check_naver(page, product: Product) -> tuple[bool | None, str]:
     3. Fall back to Korean phrase matching in body text.
     4. If nothing found, assume out of stock.
     """
-    # Wait for React to finish rendering stock state.
-    # networkidle = no network requests for 500 ms — safe signal that
-    # the dynamic content (including stock badges) has been injected.
     try:
         page.wait_for_load_state("networkidle", timeout=15_000)
     except Exception:
@@ -159,7 +275,6 @@ def _check_naver(page, product: Product) -> tuple[bool | None, str]:
 
     # --- 1. DOM selector checks (most reliable) ---
 
-    # Check sold-out indicators first
     for sel in _NAVER_OOS_SELECTORS:
         try:
             el = page.query_selector(sel)
@@ -168,7 +283,6 @@ def _check_naver(page, product: Product) -> tuple[bool | None, str]:
         except Exception:
             pass
 
-    # Check in-stock / buy button indicators
     for sel in _NAVER_IN_STOCK_SELECTORS:
         try:
             el = page.query_selector(sel)
@@ -193,8 +307,6 @@ def _check_naver(page, product: Product) -> tuple[bool | None, str]:
         return True, f"in-stock phrase matched: {found_in!r}"
 
     # --- 3. JSON-LD / script tag stock check (deep fallback) ---
-    # Naver embeds structured data in <script type="application/ld+json">
-    # which includes "availability" before React hydration completes.
     try:
         scripts = page.query_selector_all("script[type='application/ld+json']")
         for script in scripts:
@@ -278,6 +390,9 @@ def check_product_browser(product: Product) -> tuple[bool | None, str]:
 
     Returns (in_stock, detail). in_stock is None on fetch failure.
     """
+    from urllib.parse import urlsplit
+    host = urlsplit(product.url).netloc.lower()
+
     try:
         with _browser_page(product.url) as page:
             try:
@@ -285,9 +400,15 @@ def check_product_browser(product: Product) -> tuple[bool | None, str]:
             except Exception:
                 log.warning("domcontentloaded timed out for %s, using partial content", product.url)
 
+            # brand.naver.com: Next.js app, read __NEXT_DATA__ for soldOut field
+            if "brand.naver.com" in host:
+                return _check_naver_brand(page, product)
+
+            # smartstore.naver.com and other Naver shops: DOM/text strategy
             if is_naver_smartstore(product.url):
                 return _check_naver(page, product)
 
+            # Generic JS-rendered site: phrase matching only
             text = page.inner_text("body").lower()
 
             found_in = next((s for s in product.in_stock_text if s.lower() in text), None)
