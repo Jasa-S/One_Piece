@@ -41,13 +41,15 @@ def fetch_category_browser(category: Category) -> list[FoundProduct] | None:
             page = browser.new_context(locale="de-DE", user_agent=_UA).new_page()
             try:
                 from playwright.sync_api import TimeoutError as PWTimeout
-                page.goto(category.url, wait_until="networkidle", timeout=30_000)
+                # CHANGED: networkidle to domcontentloaded, timeout to 15s
+                page.goto(category.url, wait_until="domcontentloaded", timeout=15_000)
             except Exception:
-                log.warning("networkidle timed out for %s, using partial content", category.url)
+                log.warning("domcontentloaded timed out for %s, using partial content", category.url)
 
             # Scroll until page height stops growing (handles infinite-scroll grids)
             prev_height = 0
-            for i in range(15):
+            # CHANGED: reduced scroll iterations from 15 to 5 for speed
+            for i in range(5):
                 page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 page.wait_for_timeout(1500)
                 new_height = page.evaluate("document.body.scrollHeight")
@@ -109,9 +111,10 @@ def check_product_browser(product: Product) -> tuple[bool | None, str]:
             browser = pw.chromium.launch(headless=True)
             page = browser.new_context(locale="de-DE", user_agent=_UA).new_page()
             try:
-                page.goto(product.url, wait_until="networkidle", timeout=30_000)
+                # CHANGED: networkidle to domcontentloaded, timeout to 15s
+                page.goto(product.url, wait_until="domcontentloaded", timeout=15_000)
             except Exception:
-                log.warning("networkidle timed out for %s, using partial content", product.url)
+                log.warning("domcontentloaded timed out for %s, using partial content", product.url)
 
             text = page.inner_text("body").lower()
             browser.close()
