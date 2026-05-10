@@ -32,7 +32,3 @@ categories:
   url: https://www.saturn.de/de/promo-list/ent_brand_dpl_pokemon_tcg_sat?query=ent_brand_dpl_pokemon_tcg_sat&brand=POKEMON&marketplace=SATURN&page=2
   link_pattern: /de/product/
   use_browser: true
-- name: Naver 포켓몬
-  shop: m.brand.naver.com
-  url: https://m.brand.naver.com/pokemon/category/7d4ef8ffe7ca4427b42a1a61751656e4
-  use_browser: true
