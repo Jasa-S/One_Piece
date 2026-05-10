@@ -1,9 +1,10 @@
-name: Discord Command Handler
+name: Discord Command Handler (disabled)
+# Command processing has been moved into stock-check.yml
+# so it runs on the same reliable schedule. This file is kept
+# for reference but the workflow is disabled.
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"   # poll for commands every 5 minutes
-  workflow_dispatch:
+  workflow_dispatch:    # manual only, no longer runs on schedule
 
 jobs:
   handle:
