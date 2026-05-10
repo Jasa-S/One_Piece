@@ -145,11 +145,11 @@
       ]
     }
   },
-  "last_checked_at": "2026-05-10T19:45:01.013129+00:00",
+  "last_checked_at": "2026-05-10T19:46:08.109436+00:00",
   "products": {
     "https://brand.naver.com/pokemon/products/12747160892": {
       "in_stock": null,
-      "unknown_streak": 18
+      "unknown_streak": 19
     },
     "https://pokegeodude.shop/One-Piece-Heroines-Edition-Extra-Booster-Display-EB03-Japanisch": {
       "in_stock": false,
@@ -157,7 +157,7 @@
     },
     "https://www.gate-to-the-games.de/Pokemon-Karten-Mega-Entwicklung-Wachsendes-Chaos-Top-Trainer-Box-deutsch": {
       "in_stock": null,
-      "unknown_streak": 14
+      "unknown_streak": 15
     },
     "https://www.saturn.de/de/product/_pokemon-10603-pkm-kp085-accessory-pouch-collecti-sammelkarten-set-2980565.html": {
       "in_stock": false
