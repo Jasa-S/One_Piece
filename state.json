@@ -145,10 +145,11 @@
       ]
     }
   },
-  "last_checked_at": "2026-05-10T18:11:20.413899+00:00",
+  "last_checked_at": "2026-05-10T18:16:02.142311+00:00",
   "products": {
     "https://brand.naver.com/pokemon/products/12747160892": {
-      "in_stock": true
+      "in_stock": true,
+      "unknown_streak": 1
     },
     "https://www.saturn.de/de/product/_pokemon-10603-pkm-kp085-accessory-pouch-collecti-sammelkarten-set-2980565.html": {
       "in_stock": false
