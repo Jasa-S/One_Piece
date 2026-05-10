@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 
 DISCORD_API = "https://discord.com/api/v10"
 MAX_MSG = 1900
+DONE_EMOJI = "✅"
 
 HELP_TEXT = """\
 **TCG Notifier commands:**
@@ -52,6 +53,21 @@ Other commands:
 
 The bot auto-detects whether a site needs a headless browser.
 Link pattern is optional — auto-detected when possible."""
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _already_handled(msg: dict, bot_user_id: str | None) -> bool:
+    """Return True if the bot already reacted with ✅ to this message."""
+    for reaction in msg.get("reactions") or []:
+        emoji = reaction.get("emoji") or {}
+        if emoji.get("name") == DONE_EMOJI and reaction.get("me"):
+            return True
+        # Fallback: if we don't have 'me' info but the bot user ID matches a reactor,
+        # the message_reference approach covers most cases via the 'me' flag above.
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -554,16 +570,18 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
     if not all_messages:
         return
 
-    # Always advance the pointer to the NEWEST message in the batch,
-    # regardless of whether it's a command or a bot reply.
-    # This prevents old commands from being replayed every poll cycle.
+    # Always advance pointer to newest message in the entire batch
     newest_id = max(m["id"] for m in all_messages)
 
-    # Only process messages from humans (not from the bot itself)
+    # Only process command messages that:
+    # 1. Start with !
+    # 2. Are NOT from the bot itself
+    # 3. Have NOT already been handled (no ✅ reaction from the bot)
     command_messages = [
         m for m in reversed(all_messages)
         if m["content"].strip().startswith("!")
         and (bot_user_id is None or m["author"].get("id") != bot_user_id)
+        and not _already_handled(m, bot_user_id)
     ]
 
     def _save_state(last_message_id: str) -> None:
@@ -572,7 +590,7 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
             state_path.write_text(json.dumps(bot_state, indent=2))
 
     if not command_messages:
-        # No commands to process, but still advance the pointer
+        # No new commands to process, but still advance the pointer
         _save_state(newest_id)
         return
 
@@ -627,11 +645,11 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
 
         try:
             discord_client.reply(channel_id, reply, reply_to=mid)
-            discord_client.react(channel_id, mid, "✅")
+            discord_client.react(channel_id, mid, DONE_EMOJI)
         except Exception as e:
             log.warning("Failed to send Discord reply: %s", e)
 
-    # Advance pointer to the newest message in the entire batch (not just last command)
+    # Advance pointer to the newest message in the entire batch
     _save_state(newest_id)
 
     if config_changed:
@@ -641,7 +659,7 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
                 allow_unicode=True, sort_keys=False, default_flow_style=False,
             ),
             encoding="utf-8",
-            )
+        )
         log.info("config.yaml updated.")
 
 
