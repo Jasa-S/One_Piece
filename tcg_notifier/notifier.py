@@ -31,6 +31,32 @@ def send_in_stock_alert(webhook_url: str, product: Product, detail: str) -> None
     _post(webhook_url, payload)
 
 
+def send_category_in_stock_alert(
+    webhook_url: str,
+    category: Category,
+    product_url: str,
+    product_title: str,
+    detail: str,
+) -> None:
+    where = f" at **{category.shop}**" if category.shop else ""
+    embed = {
+        "title": f"In stock: {product_title[:240]}",
+        "url": product_url,
+        "description": f"in category **{category.name}**" + (f" — {category.shop}" if category.shop else ""),
+        "color": 0x2ECC71,
+        "fields": [
+            {"name": "Detection", "value": detail[:1000], "inline": False},
+            {"name": "Link", "value": product_url, "inline": False},
+        ],
+    }
+    payload = {
+        "username": "TCG Stock Notifier",
+        "content": f"@here **{product_title[:200]}** is in stock{where} (category: {category.name})!",
+        "embeds": [embed],
+    }
+    _post(webhook_url, payload)
+
+
 def send_new_listing_alert(
     webhook_url: str,
     category: Category,
@@ -49,9 +75,7 @@ def send_new_listing_alert(
     }
     payload = {
         "username": "TCG Stock Notifier",
-        "content": (
-            f"@here new listing in **{category.name}**{where}: {product_title[:200]}"
-        ),
+        "content": f"@here new listing in **{category.name}**{where}: {product_title[:200]}",
         "embeds": [embed],
     }
     _post(webhook_url, payload)
@@ -61,8 +85,6 @@ def _post(webhook_url: str, payload: dict) -> None:
     try:
         r = requests.post(webhook_url, json=payload, timeout=10)
         if r.status_code >= 300:
-            log.warning(
-                "Discord webhook returned %s: %s", r.status_code, r.text[:200]
-            )
+            log.warning("Discord webhook returned %s: %s", r.status_code, r.text[:200])
     except requests.RequestException as e:
         log.warning("Discord webhook failed: %s", e)

@@ -14,22 +14,16 @@ import yaml
 
 from .browser import close_shared_browser
 from .category import fetch_category
-from .checker import check_product
-from .config import Config, Product, load_config
-from .notifier import send_in_stock_alert, send_new_listing_alert
+from .checker import check_product, CheckResult
+from .config import Config, Defaults, Product, load_config
+from .notifier import send_in_stock_alert, send_new_listing_alert, send_category_in_stock_alert
 from .state import State
 
 log = logging.getLogger("tcg_notifier")
 
 
 def _check_products(config: Config, state: State) -> None:
-    """
-    Check all products in parallel.
-
-    - HTTP products share a requests.Session per shop domain (keep-alive reuse).
-    - Browser products run in the shared Playwright browser.
-    - Up to defaults.max_workers threads run concurrently.
-    """
+    """Check all explicit products in parallel."""
     if not config.products:
         return
 
@@ -53,10 +47,7 @@ def _check_products(config: Config, state: State) -> None:
                 continue
 
             previously_in_stock = state.was_in_stock(product.url)
-            log.info(
-                "%s [%s] in_stock=%s (%s)",
-                product.name, product.shop, result.in_stock, result.detail,
-            )
+            log.info("%s [%s] in_stock=%s (%s)", product.name, product.shop, result.in_stock, result.detail)
 
             if result.in_stock and not previously_in_stock:
                 log.info("Sending in-stock alert for %s", product.name)
@@ -67,25 +58,63 @@ def _check_products(config: Config, state: State) -> None:
     state.save()
 
 
-def _check_categories(config: Config, state: State) -> None:
-    """Check all categories in parallel and alert on new listings.
+def _check_category_stocks(
+    category,
+    urls: set[str],
+    defaults: Defaults,
+) -> dict[str, CheckResult | None]:
+    """Check stock for every URL in a category, in parallel."""
+    # Build a minimal Product stub for each URL so we can reuse check_product()
+    from .config import DEFAULT_IN_STOCK, DEFAULT_OOS, is_naver_smartstore
+    session = requests.Session()
+    results: dict[str, CheckResult | None] = {}
 
-    Does NOT register found URLs as products — categories are purely for
-    new-listing notifications.
+    def _check_one(url: str):
+        stub = Product(
+            name=url,
+            url=url,
+            shop=category.shop,
+            in_stock_text=list(DEFAULT_IN_STOCK),
+            out_of_stock_text=list(DEFAULT_OOS),
+            use_browser=category.use_browser or is_naver_smartstore(url),
+        )
+        sess = None if stub.use_browser else session
+        return url, check_product(stub, defaults, session=sess)
+
+    with ThreadPoolExecutor(max_workers=defaults.max_workers) as pool:
+        futures = {pool.submit(_check_one, u): u for u in urls}
+        for fut in as_completed(futures):
+            try:
+                url, result = fut.result()
+                results[url] = result
+            except Exception as e:
+                log.error("Error checking category URL %s: %s", futures[fut], e)
+                results[futures[fut]] = None
+
+    return results
+
+
+def _check_categories(config: Config, state: State) -> None:
+    """Fetch all categories in parallel.
+
+    For each category:
+    - Alert on new listings.
+    - Check stock on every known URL.
+    - Alert immediately when a URL goes from out-of-stock -> in-stock.
     """
     if not config.categories:
         return
 
-    def _check_one(category):
+    def _fetch_one(category):
         return category, fetch_category(category, config.defaults)
 
     with ThreadPoolExecutor(max_workers=max(2, config.defaults.max_workers // 2)) as pool:
-        futures = {pool.submit(_check_one, c): c for c in config.categories}
+        futures = {pool.submit(_fetch_one, c): c for c in config.categories}
         for fut in as_completed(futures):
             try:
                 category, found = fut.result()
             except Exception as e:
-                log.error("Unexpected error fetching category %s: %s", futures[fut].name, e)
+                log.error("Error fetching category %s: %s", futures[fut].name, e)
                 continue
 
             if found is None:
@@ -100,20 +129,43 @@ def _check_categories(config: Config, state: State) -> None:
                 category.name, category.shop, len(current), len(known), len(new_urls),
             )
 
+            # Alert on new listings
             if state.is_category_initialized(category.url):
                 for url in new_urls:
-                    log.info("Sending new-listing alert for %s", url)
+                    log.info("New listing in %s: %s", category.name, url)
                     send_new_listing_alert(config.webhook_url, category, url, current[url])
             elif current:
                 log.info("%s: first run — %d items baselined.", category.name, len(current))
 
+            # Update the set of known URLs
             state.update_category(category.url, set(current))
+
+            # Check stock on all current URLs
+            if not current:
+                continue
+
+            log.info("%s: checking stock on %d URLs…", category.name, len(current))
+            stock_results = _check_category_stocks(category, set(current), config.defaults)
+
+            for url, result in stock_results.items():
+                if result is None:
+                    continue
+                title = current.get(url, url)
+                previously = state.was_category_url_in_stock(category.url, url)
+
+                if result.in_stock and previously is not True:
+                    # Came in stock (or never checked before and is in stock)
+                    log.info("Category in-stock alert: %s — %s", category.name, url)
+                    send_category_in_stock_alert(
+                        config.webhook_url, category, url, title, result.detail
+                    )
+
+                state.update_category_url_stock(category.url, url, result.in_stock)
 
     state.save()
 
 
-def run_once(config: Config, state: State, config_path: Path, raw: dict) -> None:
-    # Run products and categories concurrently
+def run_once(config: Config, state: State) -> None:
     with ThreadPoolExecutor(max_workers=2) as pool:
         prod_fut = pool.submit(_check_products, config, state)
         cat_fut = pool.submit(_check_categories, config, state)
@@ -125,7 +177,6 @@ def run_loop(config_path: Path, state_path: Path) -> None:
     try:
         while True:
             try:
-                raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
                 config = load_config(config_path)
             except Exception as e:
                 log.error("Failed to load config (%s); retrying in 60s.", e)
@@ -133,7 +184,7 @@ def run_loop(config_path: Path, state_path: Path) -> None:
                 continue
 
             state = State(state_path)
-            run_once(config, state, config_path, raw)
+            run_once(config, state)
 
             sleep_for = config.defaults.check_interval_seconds + random.randint(
                 0, max(0, config.defaults.jitter_seconds)
@@ -145,17 +196,11 @@ def run_loop(config_path: Path, state_path: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="python -m tcg_notifier",
-        description=(
-            "Watch TCG product pages and category pages; "
-            "alert a Discord webhook when items come in stock or new listings appear."
-        ),
-    )
-    parser.add_argument("--config", default="config.yaml", help="Path to config YAML.")
-    parser.add_argument("--state", default="state.json", help="Path to state file.")
-    parser.add_argument("--once", action="store_true", help="Check once and exit.")
-    parser.add_argument("--test", action="store_true", help="Send a test ping to Discord and exit.")
+    parser = argparse.ArgumentParser(prog="python -m tcg_notifier")
+    parser.add_argument("--config", default="config.yaml")
+    parser.add_argument("--state", default="state.json")
+    parser.add_argument("--once", action="store_true")
+    parser.add_argument("--test", action="store_true")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
@@ -167,10 +212,7 @@ def main(argv: list[str] | None = None) -> int:
     config_path = Path(args.config)
     state_path = Path(args.state)
     if not config_path.exists():
-        log.error(
-            "Config not found at %s. Copy config.example.yaml to config.yaml first.",
-            config_path,
-        )
+        log.error("Config not found at %s.", config_path)
         return 1
 
     if args.test:
@@ -179,21 +221,16 @@ def main(argv: list[str] | None = None) -> int:
         _post(config.webhook_url, {
             "username": "TCG Stock Notifier",
             "content": "Test ping — the notifier is set up and working!",
-            "embeds": [{
-                "title": "Connection test",
-                "description": "If you see this, Discord notifications are working correctly.",
-                "color": 0x3498DB,
-            }],
+            "embeds": [{"title": "Connection test", "description": "Discord notifications are working.", "color": 0x3498DB}],
         })
         log.info("Test ping sent.")
         return 0
 
     if args.once:
         try:
-            raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
             config = load_config(config_path)
             state = State(state_path)
-            run_once(config, state, config_path, raw)
+            run_once(config, state)
         finally:
             close_shared_browser()
     else:

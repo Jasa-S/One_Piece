@@ -45,7 +45,7 @@ Other commands:
 `!help` — show this message
 
 The bot auto-detects whether a site needs a headless browser.
-Link pattern is optional — auto-detected when possible. Provide one (e.g. `/de/product/`) to override."""
+Link pattern is optional — auto-detected when possible."""
 
 
 # ---------------------------------------------------------------------------
@@ -61,11 +61,7 @@ class _Discord:
         params: dict[str, Any] = {"limit": 100}
         if after:
             params["after"] = after
-        r = self._s.get(
-            f"{DISCORD_API}/channels/{channel_id}/messages",
-            params=params,
-            timeout=10,
-        )
+        r = self._s.get(f"{DISCORD_API}/channels/{channel_id}/messages", params=params, timeout=10)
         r.raise_for_status()
         return r.json()
 
@@ -77,28 +73,20 @@ class _Discord:
         )
         if r.status_code == 400:
             log.warning("Reply failed (%s), sending as plain message", r.status_code)
-            self._s.post(
-                f"{DISCORD_API}/channels/{channel_id}/messages",
-                json={"content": content[:2000]},
-                timeout=10,
-            )
+            self._s.post(f"{DISCORD_API}/channels/{channel_id}/messages", json={"content": content[:2000]}, timeout=10)
         elif r.status_code >= 300:
             log.error("Discord send failed: %s %s", r.status_code, r.text[:200])
 
     def react(self, channel_id: str, message_id: str, emoji: str) -> None:
         r = self._s.put(
-            f"{DISCORD_API}/channels/{channel_id}/messages/{message_id}"
-            f"/reactions/{quote(emoji)}/@me",
+            f"{DISCORD_API}/channels/{channel_id}/messages/{message_id}/reactions/{quote(emoji)}/@me",
             timeout=10,
         )
         if r.status_code >= 300:
             log.warning("React failed: %s %s", r.status_code, r.text[:200])
 
     def delete_message(self, channel_id: str, message_id: str) -> None:
-        r = self._s.delete(
-            f"{DISCORD_API}/channels/{channel_id}/messages/{message_id}",
-            timeout=10,
-        )
+        r = self._s.delete(f"{DISCORD_API}/channels/{channel_id}/messages/{message_id}", timeout=10)
         if r.status_code == 429:
             retry_after = r.json().get("retry_after", 1)
             log.warning("Rate limited on delete, sleeping %.1fs", retry_after)
@@ -108,73 +96,40 @@ class _Discord:
             log.warning("Delete failed: %s %s", r.status_code, r.text[:200])
 
     def post(self, channel_id: str, content: str) -> dict:
-        r = self._s.post(
-            f"{DISCORD_API}/channels/{channel_id}/messages",
-            json={"content": content[:2000]},
-            timeout=10,
-        )
+        r = self._s.post(f"{DISCORD_API}/channels/{channel_id}/messages", json={"content": content[:2000]}, timeout=10)
         r.raise_for_status()
         return r.json()
 
     def delete_all_messages(self, channel_id: str) -> int:
-        """Delete every message in the channel. Returns total count deleted.
-
-        Fetches messages in pages of 100 (oldest-first via before= cursor).
-        For each batch, tries bulk-delete first (works for messages <14 days old).
-        If bulk-delete fails (e.g. messages too old), falls back to one-by-one.
-        """
         total = 0
         before: str | None = None
-
         while True:
             params: dict[str, Any] = {"limit": 100}
             if before:
                 params["before"] = before
-
-            r = self._s.get(
-                f"{DISCORD_API}/channels/{channel_id}/messages",
-                params=params,
-                timeout=10,
-            )
+            r = self._s.get(f"{DISCORD_API}/channels/{channel_id}/messages", params=params, timeout=10)
             r.raise_for_status()
             batch: list[dict] = r.json()
-
             if not batch:
                 break
-
             ids = [m["id"] for m in batch]
-
             if len(ids) >= 2:
-                # Attempt bulk delete
                 bulk_r = self._s.post(
                     f"{DISCORD_API}/channels/{channel_id}/messages/bulk-delete",
-                    json={"messages": ids},
-                    timeout=10,
+                    json={"messages": ids}, timeout=10,
                 )
                 if bulk_r.status_code in (200, 204):
                     total += len(ids)
-                    log.debug("Bulk-deleted %d messages", len(ids))
                 else:
-                    # Bulk delete failed (likely some messages >14 days) — delete individually
-                    log.warning(
-                        "Bulk delete failed (%s), falling back to individual deletes",
-                        bulk_r.status_code,
-                    )
                     for mid in ids:
                         self.delete_message(channel_id, mid)
                         total += 1
                         time.sleep(0.3)
             else:
-                # Only 1 message — delete individually
                 self.delete_message(channel_id, ids[0])
                 total += 1
-
-            # Use the oldest message in the batch as the next "before" cursor
             before = ids[-1]
-
-            # Respect rate limits between pages
             time.sleep(0.5)
-
         return total
 
 
@@ -186,22 +141,17 @@ def _cmd_add_product(data: dict, url: str, name: str) -> str:
     products: list = data.setdefault("products", []) or []
     if any(p.get("url") == url for p in products):
         return f"Already tracking `{url}`."
-
     info = probe(url)
     entry: dict = {
-        "name": name,
-        "shop": info["shop"],
-        "url": url,
+        "name": name, "shop": info["shop"], "url": url,
         "out_of_stock_text": list(DEFAULT_OOS),
         "in_stock_text": list(DEFAULT_IN_STOCK),
     }
     if info["needs_browser"]:
         entry["use_browser"] = True
-
     products.append(entry)
     data["products"] = products
-
-    browser_note = " — ⚠️ site needs headless browser, set automatically." if info["needs_browser"] else " — plain HTTP."
+    browser_note = " — ⚠️ site needs headless browser." if info["needs_browser"] else " — plain HTTP."
     return f"✅ Added product **{name}**\nProbe: {info['note']}{browser_note}"
 
 
@@ -209,24 +159,19 @@ def _derive_link_pattern(category_url: str, product_url: str) -> str | None:
     cat_segs = [s for s in urlparse(category_url).path.strip("/").split("/") if s]
     prod_path = urlparse(product_url).path
     prod_segs = [s for s in prod_path.strip("/").split("/") if s]
-
     diverge_idx = len(cat_segs)
     for i, (cs, ps) in enumerate(zip(cat_segs, prod_segs)):
         if cs != ps:
             diverge_idx = i
             break
-
     if diverge_idx < len(prod_segs):
         diverging_seg = prod_segs[diverge_idx]
         if not re.search(r'\d', diverging_seg) and len(diverging_seg) <= 20:
-            prefix = "/" + "/".join(prod_segs[:diverge_idx + 1]) + "/"
-            return prefix
-
+            return "/" + "/".join(prod_segs[:diverge_idx + 1]) + "/"
     prod_filename = prod_path.split("/")[-1]
     if "." in prod_filename:
         ext = prod_filename.rsplit(".", 1)[-1]
         return rf"\.{ext}$"
-
     return None
 
 
@@ -234,28 +179,21 @@ def _cmd_add_category(data: dict, url: str, name: str, link_pattern_override: st
     categories: list = data.setdefault("categories", []) or []
     if any(c.get("url") == url for c in categories):
         return f"Already tracking `{url}`."
-
     info = probe(url)
     effective_pattern = link_pattern_override or info["link_pattern"]
-    entry: dict = {
-        "name": name,
-        "shop": info["shop"],
-        "url": url,
-    }
+    entry: dict = {"name": name, "shop": info["shop"], "url": url}
     if effective_pattern:
         entry["link_pattern"] = effective_pattern
     if info["needs_browser"]:
         entry["use_browser"] = True
-
     categories.append(entry)
     data["categories"] = categories
-
     if effective_pattern:
         source = "provided" if link_pattern_override else "auto-detected"
         pattern_note = f" Link pattern: `{effective_pattern}` ({source})."
     else:
-        pattern_note = " No link pattern detected — send `!setpattern {name} /pattern/` to add one."
-    browser_note = " ⚠️ site needs headless browser, set automatically." if info["needs_browser"] else ""
+        pattern_note = " No link pattern — send `!setpattern {name} /pattern/` to add one."
+    browser_note = " ⚠️ site needs headless browser." if info["needs_browser"] else ""
     return f"✅ Added category **{name}**\nProbe: {info['note']}.{pattern_note}{browser_note}"
 
 
@@ -264,6 +202,7 @@ def _cmd_list(data: dict, stock_state: dict) -> str:
     products_state = stock_state.get("products") or {}
     categories_state = stock_state.get("categories") or {}
 
+    # ---- explicit products ----
     products = data.get("products") or []
     if products:
         available = sold_out = unknown = 0
@@ -273,27 +212,51 @@ def _cmd_list(data: dict, stock_state: dict) -> str:
             if "in_stock" not in st:
                 status, unknown = "⚪ unknown", unknown + 1
             elif st["in_stock"]:
-                status, available = "🟢 in stock", available + 1
+                status, available = "🟢 **in stock**", available + 1
             else:
                 status, sold_out = "🔴 sold out", sold_out + 1
-            product_lines.append(f"  📦 **{p.get('name','?')}** ({p.get('shop','?')}) — {status}")
+            product_lines.append(f"  📦 **{p.get('name','?')}** — {status}")
         parts = []
         if available: parts.append(f"🟢 {available} available")
         if sold_out:  parts.append(f"🔴 {sold_out} sold out")
         if unknown:   parts.append(f"⚪ {unknown} unknown")
-        lines.append(f"**Products ({len(products)} tracked — {' · '.join(parts) or 'none checked yet'})**")
+        lines.append(f"**📦 Products — {len(products)} tracked — {' · '.join(parts) or 'none checked yet'}**")
         lines.extend(product_lines)
 
+    # ---- categories ----
     categories = data.get("categories") or []
     if categories:
         if lines:
             lines.append("")
-        lines.append(f"**Categories ({len(categories)} tracked)**")
+        lines.append(f"**🗂️ Categories — {len(categories)} tracked**")
         for c in categories:
             cs = categories_state.get(c.get("url", "")) or {}
-            count = len(cs.get("known_urls") or [])
-            suffix = f"{count} products found" if cs.get("initialized") else "not yet baselined"
-            lines.append(f"  🗂️ **{c.get('name','?')}** ({c.get('shop','?')}) — {suffix}")
+            known_urls: list = cs.get("known_urls") or []
+            stock: dict = cs.get("stock") or {}
+            total = len(known_urls)
+
+            if not cs.get("initialized"):
+                lines.append(f"  🗂️ **{c.get('name','?')}** ({c.get('shop','?')}) — ⚪ not yet baselined")
+                continue
+
+            in_stock_count  = sum(1 for v in stock.values() if v is True)
+            out_stock_count = sum(1 for v in stock.values() if v is False)
+            unchecked       = total - len(stock)
+
+            parts = []
+            if in_stock_count:  parts.append(f"🟢 {in_stock_count} in stock")
+            if out_stock_count: parts.append(f"🔴 {out_stock_count} sold out")
+            if unchecked:       parts.append(f"⚪ {unchecked} unchecked")
+            summary = " · ".join(parts) if parts else "none checked yet"
+
+            lines.append(f"  🗂️ **{c.get('name','?')}** ({c.get('shop','?')}) — {total} listings — {summary}")
+
+            # Show individual in-stock items under the category
+            in_stock_urls = [u for u, v in stock.items() if v is True]
+            for url in in_stock_urls[:10]:  # cap at 10 to avoid wall of text
+                lines.append(f"    🟢 {url}")
+            if len(in_stock_urls) > 10:
+                lines.append(f"    … and {len(in_stock_urls) - 10} more in stock")
 
     return "\n".join(lines) if lines else "Nothing is being tracked yet."
 
@@ -326,7 +289,7 @@ def _cmd_setpattern(data: dict, query: str, pattern: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Main entry point
+# Parsing + dispatch
 # ---------------------------------------------------------------------------
 
 def _parse_commands(content: str) -> list[tuple[str, ...]]:
@@ -336,7 +299,6 @@ def _parse_commands(content: str) -> list[tuple[str, ...]]:
     while i < len(lines):
         parts = lines[i].split(None, 3)
         cmd = parts[0].lower() if parts else ""
-
         if cmd == "!add" and len(parts) == 2:
             sub = parts[1].lower()
             i += 1
@@ -350,13 +312,11 @@ def _parse_commands(content: str) -> list[tuple[str, ...]]:
         else:
             commands.append(tuple(parts))
             i += 1
-
     return commands
 
 
 def _dispatch(data: dict, stock_state: dict, parts: tuple[str, ...]) -> tuple[str, bool]:
     cmd = parts[0].lower() if parts else ""
-
     if cmd == "!help":
         return HELP_TEXT, False
     if cmd == "!list":
@@ -390,9 +350,12 @@ def _dispatch(data: dict, stock_state: dict, parts: tuple[str, ...]) -> tuple[st
         if len(parts) < 3:
             return "Usage: `!setpattern <name> /pattern/`", False
         return _cmd_setpattern(data, " ".join(parts[1:-1]), parts[-1]), True
-
     return f"Unknown command `{cmd}`. Type `!help` for usage.", False
 
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
 
 def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("state.json")) -> None:
     token = os.environ.get("DISCORD_BOT_TOKEN", "")
@@ -443,16 +406,13 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
             log.info("Running !reset: clearing config and purging ALL messages.")
             raw["products"] = []
             raw["categories"] = []
-
             deleted = discord.delete_all_messages(channel_id)
             log.info("Deleted %d messages.", deleted)
-
             try:
                 confirm = discord.post(channel_id, f"✅ **Bot reset successfully.** Config cleared and {deleted} messages deleted.")
                 state["last_message_id"] = confirm["id"]
             except Exception:
                 state.pop("last_message_id", None)
-
             state_path.write_text(json.dumps(state, indent=2))
             config_path.write_text(
                 yaml.dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=False),
@@ -496,9 +456,5 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
 if __name__ == "__main__":
     import logging
     import sys
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        stream=sys.stdout,
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
     run(Path("config.yaml"), Path("discord_state.json"))
