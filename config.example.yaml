@@ -1,0 +1,78 @@
+# TCG Stock Notifier — example config.
+#
+# 1. Copy this file to `config.yaml`.
+# 2. Paste your Discord webhook URL below (Server Settings -> Integrations -> Webhooks).
+# 3. Add one entry under `products:` per item you want to track.
+#
+# Stock detection works by scanning the rendered page text for phrases:
+#   - if any string in `out_of_stock_text` is present  -> OUT OF STOCK
+#   - else if any string in `in_stock_text` is present -> IN STOCK
+#   - else                                             -> assumed OUT OF STOCK
+#
+# Phrase matching is case-insensitive. Use phrases unique enough that they
+# don't appear in shop chrome (footer, cookie banners, etc).
+#
+# Tip: open a product page that is currently sold out, view the source, and
+# copy the exact label the shop uses ("Ausverkauft", "Nicht verfügbar", ...).
+# Then do the same on a product that IS in stock for the in-stock label.
+
+discord:
+  webhook_url: "https://discord.com/api/webhooks/REPLACE_ME"
+
+defaults:
+  check_interval_seconds: 300   # 5 minutes between full rounds
+  jitter_seconds: 60            # add 0-60s random jitter to look less bot-like
+  request_timeout_seconds: 20
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+
+products:
+  - name: "One Piece OP-09 Booster Display (example)"
+    shop: "Media Markt"
+    url: "https://www.mediamarkt.de/de/product/_REPLACE_ME.html"
+    out_of_stock_text: ["Nicht verfügbar", "Ausverkauft", "Derzeit nicht verfügbar"]
+    in_stock_text: ["In den Warenkorb", "Lieferbar"]
+
+  - name: "Pokemon Karmesin & Purpur Booster Display (example)"
+    shop: "Saturn"
+    url: "https://www.saturn.de/de/product/_REPLACE_ME.html"
+    out_of_stock_text: ["Nicht verfügbar", "Ausverkauft"]
+    in_stock_text: ["In den Warenkorb", "Lieferbar"]
+
+  - name: "One Piece Booster (example)"
+    shop: "JK Entertainment"
+    url: "https://jk-entertainment.biz/_REPLACE_ME"
+    out_of_stock_text: ["Nicht verfügbar", "Ausverkauft", "Vergriffen"]
+    in_stock_text: ["In den Warenkorb", "Sofort lieferbar", "Auf Lager"]
+
+  - name: "Pokemon Booster (example)"
+    shop: "PokéGeoDude"
+    url: "https://pokegeodude.de/products/_REPLACE_ME"
+    out_of_stock_text: ["Ausverkauft", "Sold out"]
+    in_stock_text: ["In den Warenkorb", "Add to cart"]
+
+  - name: "One Piece Booster (example)"
+    shop: "Gate to the Games"
+    url: "https://www.gate-to-the-games.de/_REPLACE_ME"
+    out_of_stock_text: ["Nicht verfügbar", "Ausverkauft", "Vergriffen"]
+    in_stock_text: ["In den Warenkorb", "Auf Lager"]
+
+  - name: "TCG Booster (example)"
+    shop: "Smyths Toys"
+    url: "https://www.smythstoys.com/de/de-de/_REPLACE_ME"
+    out_of_stock_text: ["Nicht verfügbar", "Ausverkauft", "Online ausverkauft"]
+    in_stock_text: ["In den Warenkorb"]
+
+  - name: "TCG Booster (example)"
+    shop: "Spielraum Wien"
+    url: "https://spielraum.wien/_REPLACE_ME"
+    out_of_stock_text: ["Ausverkauft", "Nicht verfügbar"]
+    in_stock_text: ["In den Warenkorb", "Lieferbar"]
+
+  # Amazon note: amazon.de aggressively blocks plain HTTP scrapers and
+  # often returns a captcha or 503. Basic detection still works sometimes,
+  # but for reliable Amazon monitoring consider the Keepa API instead.
+  - name: "One Piece Booster on Amazon (example)"
+    shop: "Amazon.de"
+    url: "https://www.amazon.de/dp/REPLACE_ME"
+    out_of_stock_text: ["Derzeit nicht verfügbar", "Currently unavailable"]
+    in_stock_text: ["In den Einkaufswagen", "Jetzt kaufen"]
