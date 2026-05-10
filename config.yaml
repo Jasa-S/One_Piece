@@ -36,6 +36,7 @@ categories:
   shop: brand.naver.com
   url: https://brand.naver.com/pokemon/category/7d4ef8ffe7ca4427b42a1a61751656e4
   use_browser: true
+  link_pattern: /pokemon/products/
 - name: Royal Pop
   shop: swatch.com
   url: https://www.swatch.com/de-de/watches/new-watch-releases/
