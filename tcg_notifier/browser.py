@@ -45,6 +45,11 @@ def fetch_category_browser(category: Category) -> list[FoundProduct] | None:
             except Exception:
                 log.warning("networkidle timed out for %s, using partial content", category.url)
 
+            # Scroll to bottom in steps to trigger lazy-loaded product grids
+            for _ in range(5):
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                page.wait_for_timeout(1200)
+
             final_url = page.url
             found: dict[str, str] = {}
             for el in page.query_selector_all(category.link_selector):
