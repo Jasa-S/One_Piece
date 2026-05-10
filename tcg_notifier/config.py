@@ -80,8 +80,7 @@ def load_config(path: Path) -> Config:
 
     categories = [Category(**c) for c in (data.get("categories") or [])]
 
-    if not products and not categories:
-        raise ValueError(f"No products or categories configured in {path}.")
+    # ---> THE TWO LINES WERE REMOVED FROM HERE <---
 
     command_channel_id = str((data.get("discord") or {}).get("command_channel_id", "") or "")
 
