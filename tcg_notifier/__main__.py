@@ -7,13 +7,45 @@ import sys
 import time
 from pathlib import Path
 
+import yaml
+
 from .category import fetch_category
 from .checker import check_product
-from .config import Config, load_config
+from .config import DEFAULT_IN_STOCK, DEFAULT_OOS, Config, Product, load_config
 from .notifier import send_in_stock_alert, send_new_listing_alert
 from .state import State
 
 log = logging.getLogger("tcg_notifier")
+
+
+def _name_from_url(url: str) -> str:
+    slug = url.rstrip("/").split("/")[-1].rsplit(".", 1)[0].lstrip("_")
+    return slug.replace("-", " ").replace("_", " ").title() or url
+
+
+def _register_as_product(config: Config, raw: dict, category, url: str, title: str) -> bool:
+    """Add a category-discovered URL to the product watchlist. No-op if already tracked."""
+    if any(p.url == url for p in config.products):
+        return False
+    name = title.strip() if title.strip() else _name_from_url(url)
+    entry: dict = {
+        "name": name,
+        "shop": category.shop,
+        "url": url,
+        "out_of_stock_text": DEFAULT_OOS,
+        "in_stock_text": DEFAULT_IN_STOCK,
+    }
+    if category.use_browser:
+        entry["use_browser"] = True
+    raw.setdefault("products", []).append(entry)
+    config.products.append(Product(
+        name=name, url=url, shop=category.shop,
+        out_of_stock_text=DEFAULT_OOS,
+        in_stock_text=DEFAULT_IN_STOCK,
+        use_browser=category.use_browser,
+    ))
+    log.info("Auto-registered product: %s (%s)", name, url)
+    return True
 
 
 def _check_products(config: Config, state: State) -> None:
@@ -38,7 +70,9 @@ def _check_products(config: Config, state: State) -> None:
         state.update_product(product.url, result.in_stock)
 
 
-def _check_categories(config: Config, state: State) -> None:
+def _check_categories(config: Config, state: State, raw: dict) -> bool:
+    """Returns True if any new products were auto-registered into raw/config."""
+    config_changed = False
     for category in config.categories:
         found = fetch_category(category, config.defaults)
         if found is None:
@@ -50,37 +84,44 @@ def _check_categories(config: Config, state: State) -> None:
 
         log.info(
             "%s [%s] %d listings, %d previously known, %d new",
-            category.name,
-            category.shop,
-            len(current),
-            len(known),
-            len(new_urls),
+            category.name, category.shop, len(current), len(known), len(new_urls),
         )
+
+        # Register every visible product as a tracked product (no-op if already registered)
+        for url, title in current.items():
+            if _register_as_product(config, raw, category, url, title):
+                config_changed = True
 
         if state.is_category_initialized(category.url):
             for url in new_urls:
                 log.info("Sending new-listing alert for %s", url)
-                send_new_listing_alert(
-                    config.webhook_url, category, url, current[url]
-                )
+                send_new_listing_alert(config.webhook_url, category, url, current[url])
         elif new_urls:
             log.info(
-                "%s: first run for this category — saving %d items as baseline.",
-                category.name,
-                len(current),
+                "%s: first run — saving %d items as baseline.",
+                category.name, len(current),
             )
 
         state.update_category(category.url, set(current))
 
+    return config_changed
 
-def run_once(config: Config, state: State) -> None:
+
+def run_once(config: Config, state: State, config_path: Path, raw: dict) -> None:
     _check_products(config, state)
-    _check_categories(config, state)
+    changed = _check_categories(config, state, raw)
+    if changed:
+        config_path.write_text(
+            yaml.dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=False),
+            encoding="utf-8",
+        )
+        log.info("config.yaml updated with %d newly registered products.", sum(1 for _ in raw.get("products", [])))
 
 
 def run_loop(config_path: Path, state_path: Path) -> None:
     while True:
         try:
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
             config = load_config(config_path)
         except Exception as e:
             log.error("Failed to load config (%s); retrying in 60s.", e)
@@ -88,7 +129,7 @@ def run_loop(config_path: Path, state_path: Path) -> None:
             continue
 
         state = State(state_path)
-        run_once(config, state)
+        run_once(config, state, config_path, raw)
 
         sleep_for = config.defaults.check_interval_seconds + random.randint(
             0, max(0, config.defaults.jitter_seconds)
@@ -142,9 +183,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.once:
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
         config = load_config(config_path)
         state = State(state_path)
-        run_once(config, state)
+        run_once(config, state, config_path, raw)
     else:
         try:
             run_loop(config_path, state_path)

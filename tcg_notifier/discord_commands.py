@@ -10,20 +10,12 @@ from urllib.parse import quote, urlparse
 import requests
 import yaml
 
+from .config import DEFAULT_IN_STOCK, DEFAULT_OOS
 from .site_probe import probe
 
 log = logging.getLogger(__name__)
 
 DISCORD_API = "https://discord.com/api/v10"
-
-DEFAULT_OOS = [
-    "Ausverkauft", "Nicht verfügbar", "Vergriffen",
-    "Derzeit nicht verfügbar", "Sold out", "Out of stock",
-]
-DEFAULT_IN_STOCK = [
-    "In den Warenkorb", "In den Einkaufswagen",
-    "Auf Lager", "Lieferbar", "Sofort lieferbar", "Add to cart",
-]
 
 HELP_TEXT = """\
 **TCG Notifier commands:**
