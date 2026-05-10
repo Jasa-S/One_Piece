@@ -29,12 +29,7 @@ jobs:
       - name: Process Discord commands
         env:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
-        run: |
-          python -c "
-          from pathlib import Path
-          from tcg_notifier.discord_commands import run
-          run(Path('config.yaml'), Path('discord_state.json'))
-          "
+        run: python -m tcg_notifier.discord_commands
 
       - name: Commit updated config and state
         run: |

@@ -73,18 +73,30 @@ class _Discord:
         return r.json()
 
     def reply(self, channel_id: str, content: str, reply_to: str) -> None:
-        self._s.post(
+        r = self._s.post(
             f"{DISCORD_API}/channels/{channel_id}/messages",
             json={"content": content[:2000], "message_reference": {"message_id": reply_to}},
             timeout=10,
         )
+        if r.status_code == 400:
+            # Reply failed (e.g. original message deleted) — send as plain message
+            log.warning("Reply failed (%s), sending as plain message", r.status_code)
+            self._s.post(
+                f"{DISCORD_API}/channels/{channel_id}/messages",
+                json={"content": content[:2000]},
+                timeout=10,
+            )
+        elif r.status_code >= 300:
+            log.error("Discord send failed: %s %s", r.status_code, r.text[:200])
 
     def react(self, channel_id: str, message_id: str, emoji: str) -> None:
-        self._s.put(
+        r = self._s.put(
             f"{DISCORD_API}/channels/{channel_id}/messages/{message_id}"
             f"/reactions/{quote(emoji)}/@me",
             timeout=10,
         )
+        if r.status_code >= 300:
+            log.warning("React failed: %s %s", r.status_code, r.text[:200])
 
 
 # ---------------------------------------------------------------------------
@@ -298,3 +310,14 @@ def run(config_path: Path, state_path: Path) -> None:
             encoding="utf-8",
         )
         log.info("config.yaml updated.")
+
+
+if __name__ == "__main__":
+    import logging
+    import sys
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        stream=sys.stdout,
+    )
+    run(Path("config.yaml"), Path("discord_state.json"))
