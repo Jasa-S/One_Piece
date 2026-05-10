@@ -28,6 +28,73 @@ _NAVER_QUEUE_RETRIES = 4
 # Seconds to wait between queue-page reload attempts.
 _NAVER_QUEUE_RETRY_DELAY = 8
 
+# ---------------------------------------------------------------------------
+# Cookie consent selectors — tried in order, first match is clicked.
+# Covers: Cookiebot, OneTrust, Usercentrics, Borlabs, custom German shops.
+# Deliberately targets "accept all" / "alle akzeptieren" buttons only —
+# we never interact with the real page UI.
+# ---------------------------------------------------------------------------
+_CONSENT_SELECTORS = [
+    # Cookiebot
+    "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
+    "button#CybotCookiebotDialogBodyButtonAccept",
+    # OneTrust
+    "#onetrust-accept-btn-handler",
+    "button.onetrust-close-btn-handler",
+    # Usercentrics (button with data-testid)
+    "button[data-testid='uc-accept-all-button']",
+    # Generic German retail "Alle akzeptieren" / "Akzeptieren"
+    "button[class*='accept-all']",
+    "button[class*='acceptAll']",
+    "button[class*='cookie-accept']",
+    "button[id*='accept-all']",
+    "button[id*='acceptAll']",
+    "a[id*='accept-all']",
+    # Text-based fallback: match any button whose visible text is one of these
+    # (handled separately in _dismiss_consent via page.get_by_role)
+]
+
+# Visible button texts to click as a last resort (case-insensitive substring match)
+_CONSENT_BUTTON_TEXTS = [
+    "Alle akzeptieren",
+    "Alle Cookies akzeptieren",
+    "Akzeptieren",
+    "Accept all",
+    "Accept All",
+    "Allow all",
+    "Allow All",
+    "Agree",
+    "I agree",
+    "OK",
+]
+
+
+def _dismiss_consent(page) -> None:
+    """Best-effort cookie consent dismissal. Silent on failure."""
+    # 1. Try known CSS selectors first
+    for sel in _CONSENT_SELECTORS:
+        try:
+            el = page.query_selector(sel)
+            if el and el.is_visible():
+                el.click(timeout=3_000)
+                log.debug("Consent dismissed via selector: %s", sel)
+                page.wait_for_timeout(600)
+                return
+        except Exception:
+            pass
+
+    # 2. Try visible button text matches
+    for text in _CONSENT_BUTTON_TEXTS:
+        try:
+            btn = page.get_by_role("button", name=re.compile(re.escape(text), re.IGNORECASE)).first
+            if btn and btn.is_visible():
+                btn.click(timeout=3_000)
+                log.debug("Consent dismissed via button text: %r", text)
+                page.wait_for_timeout(600)
+                return
+        except Exception:
+            pass
+
 
 def _get_playwright():
     try:
@@ -160,7 +227,6 @@ def _check_naver_brand(page, product: Product) -> tuple[bool | None, str]:
       3. Body text: in-stock phrases.
       4. Fallback to generic Naver DOM/text check.
     """
-    # --- Load page and retry if we hit the queue ---
     next_data_raw: str | None = _fetch_next_data(page, product.url)
 
     attempt = 0
@@ -183,19 +249,16 @@ def _check_naver_brand(page, product: Product) -> tuple[bool | None, str]:
     if attempt:
         log.info("brand.naver: real product page loaded after %d retry/retries", attempt)
 
-    # Real product page confirmed — now check stock.
     body_text = ""
     try:
         body_text = page.inner_text("body")
     except Exception as exc:
         log.debug("brand.naver: body text read failed: %s", exc)
 
-    # --- 1. Body text: sold-out phrases ---
     for phrase in _BRAND_NAVER_OOS_PHRASES:
         if phrase in body_text:
             return False, f"body oos phrase: {phrase!r}"
 
-    # --- 2. __NEXT_DATA__ JSON: targeted path only ---
     try:
         data = json.loads(next_data_raw)
         sold_out = _extract_sold_out_targeted(data)
@@ -206,12 +269,10 @@ def _check_naver_brand(page, product: Product) -> tuple[bool | None, str]:
     except Exception as exc:
         log.debug("brand.naver: __NEXT_DATA__ parse failed: %s", exc)
 
-    # --- 3. Body text: in-stock phrases ---
     for phrase in _BRAND_NAVER_IN_STOCK_PHRASES:
         if phrase in body_text:
             return True, f"body in-stock phrase: {phrase!r}"
 
-    # --- 4. Fallback ---
     log.debug("brand.naver: falling back to DOM/text check for %s", product.url)
     return _check_naver(page, product)
 
@@ -375,6 +436,8 @@ def fetch_category_browser(category: Category) -> list[FoundProduct] | None:
             except Exception:
                 log.warning("domcontentloaded timed out for %s, using partial content", category.url)
 
+            _dismiss_consent(page)
+
             prev_height = 0
             for i in range(6):
                 page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
@@ -428,13 +491,16 @@ def check_product_browser(product: Product) -> tuple[bool | None, str]:
     try:
         with _browser_page(product.url) as page:
             if "brand.naver.com" in host:
-                # Navigation is handled inside _check_naver_brand (with retry logic)
+                # Navigation + consent dismissal handled inside _check_naver_brand
                 return _check_naver_brand(page, product)
 
             try:
                 page.goto(product.url, wait_until="domcontentloaded", timeout=20_000)
             except Exception:
                 log.warning("domcontentloaded timed out for %s, using partial content", product.url)
+
+            # Dismiss cookie consent before reading any page content
+            _dismiss_consent(page)
 
             if is_naver_smartstore(product.url):
                 return _check_naver(page, product)
