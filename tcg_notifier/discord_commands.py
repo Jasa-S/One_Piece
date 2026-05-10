@@ -251,9 +251,8 @@ def _cmd_list(data: dict, stock_state: dict) -> str:
 
             lines.append(f"  🗂️ **{c.get('name','?')}** ({c.get('shop','?')}) — {total} listings — {summary}")
 
-            # Show individual in-stock items under the category
             in_stock_urls = [u for u, v in stock.items() if v is True]
-            for url in in_stock_urls[:10]:  # cap at 10 to avoid wall of text
+            for url in in_stock_urls[:10]:
                 lines.append(f"    🟢 {url}")
             if len(in_stock_urls) > 10:
                 lines.append(f"    … and {len(in_stock_urls) - 10} more in stock")
@@ -372,6 +371,8 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
     discord = _Discord(token)
 
     import json
+
+    # Load bot state (only stores last_message_id — NOT stock data)
     state: dict = {}
     if state_path.exists():
         try:
@@ -379,6 +380,7 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
         except Exception:
             pass
 
+    # Load stock state separately (written by __main__.py)
     stock_state: dict = {}
     if stock_state_path.exists():
         try:
@@ -394,8 +396,17 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
         log.error("Failed to fetch Discord messages: %s", e)
         return
 
+    # Only process command messages, oldest first
     messages = [m for m in reversed(messages) if m["content"].strip().startswith("!")]
+
+    if not messages:
+        return
+
     config_changed = False
+
+    def _save_state(last_message_id: str) -> None:
+        state["last_message_id"] = last_message_id
+        state_path.write_text(json.dumps(state, indent=2))
 
     for msg in messages:
         mid = msg["id"]
@@ -410,10 +421,10 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
             log.info("Deleted %d messages.", deleted)
             try:
                 confirm = discord.post(channel_id, f"✅ **Bot reset successfully.** Config cleared and {deleted} messages deleted.")
-                state["last_message_id"] = confirm["id"]
+                _save_state(confirm["id"])
             except Exception:
                 state.pop("last_message_id", None)
-            state_path.write_text(json.dumps(state, indent=2))
+                state_path.write_text(json.dumps(state, indent=2))
             config_path.write_text(
                 yaml.dump(raw, allow_unicode=True, sort_keys=False, default_flow_style=False),
                 encoding="utf-8",
@@ -441,9 +452,10 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
         except Exception as e:
             log.warning("Failed to send Discord reply: %s", e)
 
-        state["last_message_id"] = mid
-
-    state_path.write_text(json.dumps(state, indent=2))
+        # Write last_message_id to disk IMMEDIATELY after handling each message.
+        # This prevents re-processing the same message if the process restarts
+        # or if run() is called again before the loop finishes.
+        _save_state(mid)
 
     if config_changed:
         config_path.write_text(
