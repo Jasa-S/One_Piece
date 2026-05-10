@@ -65,9 +65,16 @@ def _already_handled(msg: dict, bot_user_id: str | None) -> bool:
         emoji = reaction.get("emoji") or {}
         if emoji.get("name") == DONE_EMOJI and reaction.get("me"):
             return True
-        # Fallback: if we don't have 'me' info but the bot user ID matches a reactor,
-        # the message_reference approach covers most cases via the 'me' flag above.
     return False
+
+
+def _load_raw(config_path: Path) -> dict:
+    """Read config.yaml freshly from disk, returning an empty dict on failure."""
+    try:
+        return yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except Exception as e:
+        log.warning("Could not read config.yaml: %s", e)
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +88,6 @@ class _Discord:
         self.bot_user_id: str | None = None
 
     def get_bot_user_id(self) -> str | None:
-        """Fetch and cache the bot's own user ID so we can skip its messages."""
         if self.bot_user_id:
             return self.bot_user_id
         try:
@@ -466,6 +472,7 @@ def _dispatch(
     parts: tuple[str, ...],
     defaults: Defaults | None = None,
     stock_state_path: Path = Path("state.json"),
+    config_path: Path = Path("config.yaml"),
 ) -> tuple[str, bool]:
     cmd = parts[0].lower() if parts else ""
     if cmd == "!help":
@@ -473,12 +480,17 @@ def _dispatch(
     if cmd == "!status":
         return _cmd_status(stock_state_path), False
     if cmd == "!list":
+        # Always re-read config.yaml so !list reflects the latest saved state,
+        # not the snapshot taken at the start of this run() call.
+        fresh = _load_raw(config_path)
+        # Re-inject the known URLs from state so category baselines show up.
+        fresh["_state_known_urls"] = data.get("_state_known_urls", {})
         if defaults is not None:
             log.info("!list: running live stock check…")
-            live_stock = _live_check_all(data, defaults)
+            live_stock = _live_check_all(fresh, defaults)
         else:
             live_stock = stock_state
-        return _cmd_list(data, live_stock), False
+        return _cmd_list(fresh, live_stock), False
     if cmd == "!remove":
         if len(parts) < 2:
             return "Usage: `!remove <name>`", False
@@ -521,7 +533,7 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
         log.error("DISCORD_BOT_TOKEN environment variable not set.")
         return
 
-    raw: dict = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    raw: dict = _load_raw(config_path)
     channel_id = str((raw.get("discord") or {}).get("command_channel_id", "")).strip()
     if not channel_id:
         log.error("discord.command_channel_id not configured in config.yaml.")
@@ -534,8 +546,6 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
         defaults = None
 
     discord_client = _Discord(token)
-
-    # Fetch the bot's own user ID so we can ignore its own messages
     bot_user_id = discord_client.get_bot_user_id()
     log.debug("Bot user ID: %s", bot_user_id)
 
@@ -570,13 +580,8 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
     if not all_messages:
         return
 
-    # Always advance pointer to newest message in the entire batch
     newest_id = max(m["id"] for m in all_messages)
 
-    # Only process command messages that:
-    # 1. Start with !
-    # 2. Are NOT from the bot itself
-    # 3. Have NOT already been handled (no ✅ reaction from the bot)
     command_messages = [
         m for m in reversed(all_messages)
         if m["content"].strip().startswith("!")
@@ -590,7 +595,6 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
             state_path.write_text(json.dumps(bot_state, indent=2))
 
     if not command_messages:
-        # No new commands to process, but still advance the pointer
         _save_state(newest_id)
         return
 
@@ -633,6 +637,7 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
                     raw, stock_state, cmd_parts,
                     defaults=defaults,
                     stock_state_path=stock_state_path,
+                    config_path=config_path,
                 )
                 reply_lines.append(line_reply)
                 changed = changed or line_changed
@@ -649,7 +654,6 @@ def run(config_path: Path, state_path: Path, stock_state_path: Path = Path("stat
         except Exception as e:
             log.warning("Failed to send Discord reply: %s", e)
 
-    # Advance pointer to the newest message in the entire batch
     _save_state(newest_id)
 
     if config_changed:
