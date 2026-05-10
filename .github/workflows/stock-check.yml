@@ -1,8 +1,9 @@
 name: TCG Stock Check
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"   # every 5 minutes
+  # schedule disabled — project parked. Re-add the schedule block to resume:
+  #   schedule:
+  #     - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       test_ping:
