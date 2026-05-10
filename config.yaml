@@ -9,25 +9,33 @@ defaults:
   request_timeout_seconds: 20
 
 # --- Specific products to watch for stock changes ---
-# For each product:
-#   1. Open the product page in your browser
-#   2. View Source (Ctrl+U) and search for the out-of-stock label
-#      (e.g. "Ausverkauft", "Nicht verfügbar") — copy the exact spelling
-#   3. Do the same on an in-stock product for in_stock_text
 products: []
-  # Example — replace with real URLs:
-  # - name: "One Piece OP-09 Booster Display"
-  #   shop: "JK Entertainment"
-  #   url: "https://jk-entertainment.biz/products/REPLACE_ME"
-  #   out_of_stock_text: ["Ausverkauft", "Nicht verfügbar", "Vergriffen"]
-  #   in_stock_text: ["In den Warenkorb", "Auf Lager"]
 
 # --- Category pages to watch for NEW listings ---
 # First run saves all current items as baseline (no alerts).
 # Every subsequent run alerts on any new product URL that appears.
-categories: []
-  # Example — replace with real URLs:
-  # - name: "One Piece @ JK Entertainment"
-  #   shop: "JK Entertainment"
-  #   url: "https://jk-entertainment.biz/collections/one-piece"
-  #   link_pattern: "/products/"
+categories:
+  - name: "Pokemon Tin-Boxen @ Saturn"
+    shop: "Saturn"
+    url: "https://www.saturn.de/de/brand/pokemon-sammelkartenspiel/tin-boxen"
+    link_pattern: "/de/product/"
+
+  - name: "Pokemon Kollektionen @ Saturn"
+    shop: "Saturn"
+    url: "https://www.saturn.de/de/promo-list/ent_brand_loa_pokemon_grid_kollektionen"
+    link_pattern: "/de/product/"
+
+  - name: "Pokemon Premium Kollektionen @ Saturn"
+    shop: "Saturn"
+    url: "https://www.saturn.de/de/promo-list/ent_brand_loa_pokemon_grid_premium_kollektionen"
+    link_pattern: "/de/product/"
+
+  - name: "Pokemon Top Trainer Boxen @ Saturn"
+    shop: "Saturn"
+    url: "https://www.saturn.de/de/brand/pokemon-sammelkartenspiel/top-trainer-boxen"
+    link_pattern: "/de/product/"
+
+  - name: "Pokemon TCG Suche @ Saturn"
+    shop: "Saturn"
+    url: "https://www.saturn.de/de/promo-list/ent_brand_dpl_pokemon_tcg_sat?query=ent_brand_dpl_pokemon_tcg_sat&brand=POKEMON&marketplace=SATURN&page=2"
+    link_pattern: "/de/product/"
