@@ -327,69 +327,98 @@ def _cmd_add_category(data: dict, url: str, name: str, link_pattern_override: st
     return f"\u2705 Added category **{name}**\nProbe: {info['note']}.{pattern_note}{browser_note}"
 
 
+def _stock_emoji(in_stock: bool | None) -> str:
+    if in_stock is True:
+        return "\U0001f7e2"
+    if in_stock is False:
+        return "\U0001f534"
+    return "\u26aa"
+
+
 def _cmd_list(data: dict, live_stock: dict) -> str:
     lines: list[str] = []
     products_stock = live_stock.get("products") or {}
     categories_stock = live_stock.get("categories") or {}
+    now = datetime.now(timezone.utc).strftime("%H:%M UTC")
 
+    # ── Products ──────────────────────────────────────────────────────────
     products = data.get("products") or []
     if products:
-        available = sold_out = unknown = 0
-        product_lines = []
-        for p in products:
-            st = products_stock.get(p.get("url", ""))
-            if st is None or "in_stock" not in st:
-                status, unknown = "\u26aa unknown", unknown + 1
-            elif st["in_stock"]:
-                status, available = "\U0001f7e2 **in stock**", available + 1
-            else:
-                status, sold_out = "\U0001f534 sold out", sold_out + 1
-            product_lines.append(f"  \U0001f4e6 **{p.get('name','?')}** \u2014 {status}")
-        parts = []
-        if available: parts.append(f"\U0001f7e2 {available} available")
-        if sold_out:  parts.append(f"\U0001f534 {sold_out} sold out")
-        if unknown:   parts.append(f"\u26aa {unknown} unknown")
-        lines.append(f"**\U0001f4e6 Products \u2014 {len(products)} tracked \u2014 {' \u00b7 '.join(parts) or 'checking\u2026'}**")
-        lines.extend(product_lines)
+        in_s = sum(1 for p in products if (products_stock.get(p.get("url", "")) or {}).get("in_stock") is True)
+        out_s = sum(1 for p in products if (products_stock.get(p.get("url", "")) or {}).get("in_stock") is False)
+        unk = len(products) - in_s - out_s
 
+        summary_parts = []
+        if in_s:  summary_parts.append(f"\U0001f7e2 {in_s}")
+        if out_s: summary_parts.append(f"\U0001f534 {out_s}")
+        if unk:   summary_parts.append(f"\u26aa {unk}")
+        summary = "  ".join(summary_parts)
+
+        lines.append(f"**\U0001f4e6 Products** ({len(products)})  {summary}")
+        lines.append("\u2500" * 32)
+        for p in products:
+            url = p.get("url", "")
+            name = p.get("name", "?")
+            st = products_stock.get(url)
+            if st is None or "in_stock" not in st:
+                status = "\u26aa unknown"
+            elif st["in_stock"]:
+                status = f"\U0001f7e2 in stock  \u2192 [buy]({url})"
+            else:
+                status = "\U0001f534 sold out"
+            shop = p.get("shop", "")
+            shop_str = f"  `{shop}`" if shop else ""
+            lines.append(f"**{name}**{shop_str}\n{status}")
+
+    # ── Categories ────────────────────────────────────────────────────────
     categories = data.get("categories") or []
     if categories:
         if lines:
             lines.append("")
-        lines.append(f"**\U0001f5c2\ufe0f Categories \u2014 {len(categories)} tracked**")
+        lines.append(f"**\U0001f5c2\ufe0f Categories** ({len(categories)})")
+        lines.append("\u2500" * 32)
         for c in categories:
             cat_url = c.get("url", "")
+            name = c.get("name", "?")
+            shop = c.get("shop", "")
+            shop_str = f"  `{shop}`" if shop else ""
             known_urls: list = data.get("_state_known_urls", {}).get(cat_url) or []
             stock: dict = (categories_stock.get(cat_url) or {}).get("stock") or {}
             total = len(known_urls)
 
             if total == 0:
-                lines.append(f"  \U0001f5c2\ufe0f **{c.get('name','?')}** ({c.get('shop','?')}) \u2014 \u26aa not yet baselined")
+                lines.append(f"**{name}**{shop_str}\n\u26aa not yet baselined")
                 continue
 
-            in_stock_count  = sum(1 for v in stock.values() if v is True)
-            out_stock_count = sum(1 for v in stock.values() if v is False)
+            in_s  = sum(1 for v in stock.values() if v is True)
+            out_s = sum(1 for v in stock.values() if v is False)
 
-            parts = []
-            if in_stock_count:  parts.append(f"\U0001f7e2 {in_stock_count} in stock")
-            if out_stock_count: parts.append(f"\U0001f534 {out_stock_count} sold out")
-            summary = " \u00b7 ".join(parts) if parts else "\U0001f534 all sold out"
+            summary_parts = []
+            if in_s:  summary_parts.append(f"\U0001f7e2 {in_s} in stock")
+            if out_s: summary_parts.append(f"\U0001f534 {out_s} sold out")
+            summary = "  ".join(summary_parts) or "\U0001f534 all sold out"
 
-            lines.append(f"  \U0001f5c2\ufe0f **{c.get('name','?')}** ({c.get('shop','?')}) \u2014 {total} listings \u2014 {summary}")
+            lines.append(f"**{name}**{shop_str}  \u2014  {total} listings  \u00b7  {summary}")
 
             in_stock_urls = [u for u, v in stock.items() if v is True]
-            for url in in_stock_urls[:10]:
-                lines.append(f"    \U0001f7e2 {url}")
-            if len(in_stock_urls) > 10:
-                lines.append(f"    \u2026 and {len(in_stock_urls) - 10} more in stock")
+            for url in in_stock_urls[:8]:
+                # Show a short label: last path segment, max 60 chars
+                label = urlparse(url).path.rstrip("/").split("/")[-1].replace("-", " ")[:60] or url
+                lines.append(f"  \U0001f7e2 [{label}]({url})")
+            if len(in_stock_urls) > 8:
+                lines.append(f"  \u2026 +{len(in_stock_urls) - 8} more in stock")
 
-    return "\n".join(lines) if lines else "Nothing is being tracked yet."
+    if not lines:
+        return "Nothing is being tracked yet."
+
+    lines.append("")
+    lines.append(f"-# checked at {now}")
+    return "\n".join(lines)
 
 
 def _cmd_debug(url: str, defaults: Defaults | None) -> str:
     """Fetch a URL with the browser and dump: check result, __NEXT_DATA__ top-level
-    keys + pageProps keys, and the first 800 chars of body text. Helps diagnose
-    false stock readings without needing server log access."""
+    keys + pageProps keys, and the first 800 chars of body text."""
     from urllib.parse import urlsplit
     from .browser import _browser_page, _check_naver_brand, _check_naver
     from .config import is_naver_smartstore
@@ -411,7 +440,6 @@ def _cmd_debug(url: str, defaults: Defaults | None) -> str:
             except Exception as e:
                 lines.append(f"\u26a0\ufe0f goto warning: {e}")
 
-            # --- __NEXT_DATA__ inspection ---
             next_data_raw = None
             try:
                 next_data_raw = page.eval_on_selector("#__NEXT_DATA__", "el => el.textContent")
@@ -425,8 +453,6 @@ def _cmd_debug(url: str, defaults: Defaults | None) -> str:
                     pp_keys = list((nd.get("props") or {}).get("pageProps") or {})
                     lines.append(f"**__NEXT_DATA__ top keys:** `{top_keys}`")
                     lines.append(f"**pageProps keys:** `{pp_keys}`")
-
-                    # Dump first product-like object found
                     pp = (nd.get("props") or {}).get("pageProps") or {}
                     for k in ("product", "item", "productDetail", "detail"):
                         obj = pp.get(k)
@@ -443,14 +469,12 @@ def _cmd_debug(url: str, defaults: Defaults | None) -> str:
             else:
                 lines.append("**No #__NEXT_DATA__ tag found on page.**")
 
-            # --- body text snippet ---
             try:
                 body = page.inner_text("body")[:800]
                 lines.append(f"**Body text (first 800 chars):**\n```\n{body}\n```")
             except Exception as e:
                 lines.append(f"**Body text error:** {e}")
 
-            # --- actual check result ---
             if "brand.naver.com" in host:
                 in_stock, detail = _check_naver_brand(page, stub)
             elif is_naver_smartstore(url):
