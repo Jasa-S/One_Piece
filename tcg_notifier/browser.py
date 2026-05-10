@@ -112,58 +112,91 @@ def _browser_page(url: str) -> Generator:
 # brand.naver.com — Next.js __NEXT_DATA__ approach
 # ---------------------------------------------------------------------------
 
+# Korean sold-out phrases that only appear in the product content area,
+# never in nav/header, so they are safe to match anywhere in body text.
+_BRAND_NAVER_OOS_PHRASES = [
+    "품절되었습니다",   # "It is sold out" — shown as the primary sold-out message
+    "일시품절",         # "Temporarily out of stock"
+    "품절",             # "Sold out" — shorter fallback
+]
+
+# The buy/cart phrase appears in the nav too, so we only treat it as in-stock
+# when NO sold-out phrase is present.
+_BRAND_NAVER_IN_STOCK_PHRASES = [
+    "구매하기",   # "Buy now"
+    "장바구니",   # "Add to cart"
+]
+
+
 def _check_naver_brand(page, product: Product) -> tuple[bool | None, str]:
-    """Stock check for brand.naver.com using the embedded __NEXT_DATA__ JSON.
+    """Stock check for brand.naver.com.
 
-    brand.naver.com is a Next.js app. It embeds the full product payload
-    (including a top-level `soldOut` boolean) in <script id="__NEXT_DATA__">
-    before any React hydration. This is the most reliable signal available:
-    it is set by the server, not by client-side JS, so it reflects the true
-    stock state and is not confused by nav/header buttons that also contain
-    the Korean buy phrase even on sold-out pages.
-
-    Strategy:
-      1. Wait for the __NEXT_DATA__ script tag to appear (fast, server-rendered).
-      2. Parse the JSON and look for soldOut / stockCount / purchasable fields.
-      3. Fall back to the Naver smartstore DOM/text checks if parsing fails.
+    Priority order:
+      1. Body text: sold-out Korean phrases (품절되었습니다 etc.) — highest
+         confidence because these phrases only appear in the product content
+         area when the item is genuinely unavailable.
+      2. __NEXT_DATA__ JSON: walk the top-level product object for soldOut /
+         stockCount / purchasable fields on a *targeted* path only (no deep
+         search to avoid hitting a soldOut=false on an in-stock option variant
+         while the overall product is sold out).
+      3. Body text: in-stock phrases (구매하기 / 장바구니) — only if no OOS
+         signal found anywhere.
+      4. Fallback to the generic Naver smartstore DOM/text check.
     """
     try:
         page.wait_for_selector("#__NEXT_DATA__", timeout=15_000)
     except Exception:
         log.debug("brand.naver: __NEXT_DATA__ not found within timeout")
 
-    # --- 1. Parse __NEXT_DATA__ JSON ---
+    # --- 1. Body text: sold-out phrases (ground truth) ---
+    try:
+        body_text = page.inner_text("body")
+        for phrase in _BRAND_NAVER_OOS_PHRASES:
+            if phrase in body_text:
+                return False, f"body text oos phrase: {phrase!r}"
+    except Exception as exc:
+        log.debug("brand.naver: body text read failed: %s", exc)
+        body_text = ""
+
+    # --- 2. __NEXT_DATA__: targeted path only (no broad deep search) ---
     try:
         raw = page.eval_on_selector("#__NEXT_DATA__", "el => el.textContent")
         if raw:
             data = json.loads(raw)
-            sold_out = _extract_sold_out(data)
+            sold_out = _extract_sold_out_targeted(data)
             if sold_out is True:
-                return False, "__NEXT_DATA__ soldOut=true"
+                return False, "__NEXT_DATA__ soldOut=true (targeted)"
             if sold_out is False:
-                return True, "__NEXT_DATA__ soldOut=false"
+                # Don't trust this alone — only confirm in-stock once we also
+                # verify no OOS phrase is present (already checked above).
+                log.debug("brand.naver: __NEXT_DATA__ soldOut=false")
     except Exception as exc:
         log.debug("brand.naver: __NEXT_DATA__ parse failed: %s", exc)
 
-    # --- 2. Fallback: networkidle + DOM/text checks (same as smartstore) ---
+    # --- 3. Body text: in-stock phrases ---
+    try:
+        for phrase in _BRAND_NAVER_IN_STOCK_PHRASES:
+            if phrase in body_text:
+                return True, f"body text in-stock phrase: {phrase!r}"
+    except Exception:
+        pass
+
+    # --- 4. Fallback ---
     log.debug("brand.naver: falling back to DOM/text check for %s", product.url)
     return _check_naver(page, product)
 
 
-def _extract_sold_out(data: dict) -> bool | None:
-    """Walk the __NEXT_DATA__ tree to find soldOut / stockCount / purchasable.
+def _extract_sold_out_targeted(data: dict) -> bool | None:
+    """Walk __NEXT_DATA__ using known paths only — no broad deep search.
 
-    Returns True  -> definitely sold out
-            False -> definitely in stock
-            None  -> could not determine
+    A broad recursive search risks finding soldOut=false on an in-stock
+    *option variant* while the parent product is sold out. Instead we only
+    read the top-level product object directly under pageProps.
     """
-    # Flatten all JSON values into a searchable string as last resort,
-    # but first do a targeted walk of known paths.
     try:
-        props = data.get("props", {})
-        page_props = props.get("pageProps", {})
+        page_props = (data.get("props") or {}).get("pageProps") or {}
 
-        # Common path: pageProps.product.soldOut
+        # Primary path: pageProps.<product|item|productDetail|detail>
         for key in ("product", "item", "productDetail", "detail"):
             obj = page_props.get(key)
             if isinstance(obj, dict):
@@ -171,19 +204,20 @@ def _extract_sold_out(data: dict) -> bool | None:
                 if result is not None:
                     return result
 
-        # Sometimes nested under pageProps.initialState or pageProps.dehydratedState
-        for key in ("initialState", "dehydratedState", "initialData"):
+        # Secondary: pageProps.initialState — one level down only
+        for key in ("initialState", "initialData"):
             obj = page_props.get(key)
             if isinstance(obj, dict):
-                result = _deep_search_sold_out(obj, depth=4)
-                if result is not None:
-                    return result
-
-        # Broad deep search as last resort
-        return _deep_search_sold_out(data, depth=6)
+                for inner_key in ("product", "item", "productDetail", "detail"):
+                    inner = obj.get(inner_key)
+                    if isinstance(inner, dict):
+                        result = _read_stock_fields(inner)
+                        if result is not None:
+                            return result
 
     except Exception:
-        return None
+        pass
+    return None
 
 
 def _read_stock_fields(obj: dict) -> bool | None:
@@ -202,7 +236,12 @@ def _read_stock_fields(obj: dict) -> bool | None:
 
 
 def _deep_search_sold_out(obj, depth: int) -> bool | None:
-    """Recursively search a JSON tree for stock fields, up to `depth` levels."""
+    """Recursively search a JSON tree for stock fields, up to `depth` levels.
+
+    NOTE: This is intentionally no longer called by _check_naver_brand because
+    it can return a false in-stock result by finding soldOut=false on an option
+    variant. Kept for potential use elsewhere.
+    """
     if depth == 0 or not isinstance(obj, dict):
         return None
     result = _read_stock_fields(obj)
