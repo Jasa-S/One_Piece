@@ -4,8 +4,4 @@ __pycache__/
 .venv/
 venv/
 .env
-
-# Local config and runtime state — never commit these
-config.yaml
-state.json
 *.log

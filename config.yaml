@@ -1,0 +1,33 @@
+# Webhook URL is injected via the DISCORD_WEBHOOK_URL GitHub secret.
+# If running locally, paste your webhook URL here instead.
+discord:
+  webhook_url: ""
+
+defaults:
+  check_interval_seconds: 300
+  jitter_seconds: 60
+  request_timeout_seconds: 20
+
+# --- Specific products to watch for stock changes ---
+# For each product:
+#   1. Open the product page in your browser
+#   2. View Source (Ctrl+U) and search for the out-of-stock label
+#      (e.g. "Ausverkauft", "Nicht verfügbar") — copy the exact spelling
+#   3. Do the same on an in-stock product for in_stock_text
+products: []
+  # Example — replace with real URLs:
+  # - name: "One Piece OP-09 Booster Display"
+  #   shop: "JK Entertainment"
+  #   url: "https://jk-entertainment.biz/products/REPLACE_ME"
+  #   out_of_stock_text: ["Ausverkauft", "Nicht verfügbar", "Vergriffen"]
+  #   in_stock_text: ["In den Warenkorb", "Auf Lager"]
+
+# --- Category pages to watch for NEW listings ---
+# First run saves all current items as baseline (no alerts).
+# Every subsequent run alerts on any new product URL that appears.
+categories: []
+  # Example — replace with real URLs:
+  # - name: "One Piece @ JK Entertainment"
+  #   shop: "JK Entertainment"
+  #   url: "https://jk-entertainment.biz/collections/one-piece"
+  #   link_pattern: "/products/"

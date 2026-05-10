@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -46,11 +47,13 @@ class Config:
 def load_config(path: Path) -> Config:
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
-    webhook_url = (data.get("discord") or {}).get("webhook_url", "")
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL") or (
+        (data.get("discord") or {}).get("webhook_url", "")
+    )
     if not webhook_url or "REPLACE_ME" in webhook_url:
         raise ValueError(
-            f"Set discord.webhook_url in {path}. "
-            "Get one from Discord: Server Settings -> Integrations -> Webhooks."
+            f"Webhook URL not set. Either add discord.webhook_url to {path} "
+            "or set the DISCORD_WEBHOOK_URL environment variable."
         )
 
     defaults = Defaults(**(data.get("defaults") or {}))
