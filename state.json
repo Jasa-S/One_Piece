@@ -38,8 +38,14 @@
     },
     "https://www.saturn.de/de/promo-list/ent_brand_loa_pokemon_grid_premium_kollektionen": {
       "initialized": true,
-      "known_urls": [],
-      "stock": {}
+      "known_urls": [
+        "https://www.saturn.de/de/product/_pokemon-41092-cynthias-knakrack-ex-premium-k-mbe3-sammelkarten-2988491.html",
+        "https://www.saturn.de/de/product/_the-pokemon-company-int-pokemon-ex-premium-kollektion-sammelkarten-2977298.html"
+      ],
+      "stock": {
+        "https://www.saturn.de/de/product/_pokemon-41092-cynthias-knakrack-ex-premium-k-mbe3-sammelkarten-2988491.html": false,
+        "https://www.saturn.de/de/product/_the-pokemon-company-int-pokemon-ex-premium-kollektion-sammelkarten-2977298.html": false
+      }
     },
     "https://www.swatch.com/de-de/watches/new-watch-releases/": {
       "initialized": true,
@@ -131,7 +137,7 @@
       ]
     }
   },
-  "last_checked_at": "2026-05-10T22:11:27.364698+00:00",
+  "last_checked_at": "2026-05-10T22:15:25.209690+00:00",
   "products": {
     "https://brand.naver.com/pokemon/products/12747160892": {
       "in_stock": true
