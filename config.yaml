@@ -5,25 +5,7 @@ defaults:
   check_interval_seconds: 300
   jitter_seconds: 60
   request_timeout_seconds: 20
-products:
-- name: 포켓몬
-  shop: brand.naver.com
-  url: https://brand.naver.com/pokemon/category/7d4ef8ffe7ca4427b42a1a61751656e4
-  out_of_stock_text:
-  - Ausverkauft
-  - Nicht verfügbar
-  - Vergriffen
-  - Derzeit nicht verfügbar
-  - Sold out
-  - Out of stock
-  in_stock_text:
-  - In den Warenkorb
-  - In den Einkaufswagen
-  - Auf Lager
-  - Lieferbar
-  - Sofort lieferbar
-  - Add to cart
-  use_browser: true
+products: []
 categories:
 - name: Pokemon Tin-Boxen @ Saturn
   shop: Saturn
@@ -49,4 +31,8 @@ categories:
   shop: Saturn
   url: https://www.saturn.de/de/promo-list/ent_brand_dpl_pokemon_tcg_sat?query=ent_brand_dpl_pokemon_tcg_sat&brand=POKEMON&marketplace=SATURN&page=2
   link_pattern: /de/product/
+  use_browser: true
+- name: 포켓몬
+  shop: brand.naver.com
+  url: https://brand.naver.com/pokemon/category/7d4ef8ffe7ca4427b42a1a61751656e4
   use_browser: true

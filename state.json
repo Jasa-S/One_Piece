@@ -1,5 +1,25 @@
 {
   "categories": {
+    "https://brand.naver.com/pokemon/category/7d4ef8ffe7ca4427b42a1a61751656e4": {
+      "initialized": true,
+      "known_urls": [
+        "http://benefit.pay.naver.com/coupon",
+        "http://help.pay.naver.com",
+        "http://ips.storefarm.naver.com",
+        "http://mktg.naver.com/privacy/privacy.html",
+        "http://my.shopping.naver.com/my/p/zzim/index.nhn",
+        "http://order.pay.naver.com/main/cart",
+        "http://order.pay.naver.com/orderStatus",
+        "http://pay.naver.com/provision",
+        "http://storefarm.naver.com/main/rules/responsibility",
+        "http://storefarm.naver.com/main/rules/safety",
+        "http://www.ftc.go.kr/info/bizinfo/communicationList.jsp",
+        "http://www.naver.com/rules/youthpolicy.html",
+        "http://www.navercorp.com/",
+        "https://help.sell.smartstore.naver.com/index.help",
+        "mailto:helpcustomer@naver.com"
+      ]
+    },
     "https://m.brand.naver.com/pokemon/category/7d4ef8ffe7ca4427b42a1a61751656e4": {
       "initialized": true,
       "known_urls": [
