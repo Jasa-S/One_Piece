@@ -26,13 +26,29 @@ DEFAULT_IN_STOCK = [
 
 HELP_TEXT = """\
 **TCG Notifier commands:**
-`!add product <url> <name>` — alert when a specific product comes in stock
-`!add category <url> <name>` — alert when a new product appears in a category
+
+Single entry:
+`!add product <url> <name>`
+`!add category <url> <name>`
+
+Multiple entries in one message (block format):
+```
+!add product
+https://shop.de/product/1 One Piece OP-09 Display
+https://shop.de/product/2 Pokemon 151 TTB
+```
+```
+!add category
+https://shop.de/collections/op One Piece @ JK
+https://shop.de/collections/pokemon Pokemon @ Shop
+```
+
+Other commands:
 `!list` — show everything currently tracked
 `!remove <name>` — stop tracking (partial name match)
 `!help` — show this message
 
-The bot auto-detects whether a site needs a headless browser and sets it up automatically."""
+The bot auto-detects whether a site needs a headless browser."""
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +166,68 @@ def _cmd_remove(data: dict, query: str) -> str:
 # Main entry point
 # ---------------------------------------------------------------------------
 
+def _parse_commands(content: str) -> list[tuple[str, ...]]:
+    """Parse a (possibly multi-line) message into a list of command tuples.
+
+    Single-line:
+        !add product https://... Name
+        !add category https://... Name
+
+    Block (type on first line, one url+name per subsequent line):
+        !add product
+        https://... Name 1
+        https://... Name 2
+    """
+    lines = [l.strip() for l in content.splitlines() if l.strip()]
+    commands: list[tuple[str, ...]] = []
+    i = 0
+    while i < len(lines):
+        parts = lines[i].split(None, 3)
+        cmd = parts[0].lower() if parts else ""
+
+        if cmd == "!add" and len(parts) == 2:
+            # Block format: following non-command lines are "url name" pairs
+            sub = parts[1].lower()
+            i += 1
+            while i < len(lines) and not lines[i].startswith("!"):
+                pair = lines[i].split(None, 1)
+                if len(pair) == 2:
+                    commands.append(("!add", sub, pair[0], pair[1]))
+                elif len(pair) == 1:
+                    commands.append(("!add", sub, pair[0], pair[0]))
+                i += 1
+        else:
+            commands.append(tuple(parts))
+            i += 1
+
+    return commands
+
+
+def _dispatch(data: dict, parts: tuple[str, ...]) -> tuple[str, bool]:
+    """Execute one parsed command. Returns (reply_text, config_changed)."""
+    cmd = parts[0].lower() if parts else ""
+
+    if cmd == "!help":
+        return HELP_TEXT, False
+    if cmd == "!list":
+        return _cmd_list(data), False
+    if cmd == "!remove":
+        if len(parts) < 2:
+            return "Usage: `!remove <name>`", False
+        return _cmd_remove(data, " ".join(parts[1:])), True
+    if cmd == "!add":
+        if len(parts) < 4:
+            return "Usage: `!add product <url> <name>` or `!add category <url> <name>`", False
+        sub, url, name = parts[1].lower(), parts[2], parts[3]
+        if sub == "product":
+            return _cmd_add_product(data, url, name), True
+        if sub == "category":
+            return _cmd_add_category(data, url, name), True
+        return f"Unknown type `{sub}`. Use `product` or `category`.", False
+
+    return f"Unknown command `{cmd}`. Type `!help` for usage.", False
+
+
 def run(config_path: Path, state_path: Path) -> None:
     token = os.environ.get("DISCORD_BOT_TOKEN", "")
     if not token:
@@ -187,36 +265,21 @@ def run(config_path: Path, state_path: Path) -> None:
     for msg in messages:
         mid = msg["id"]
         content = msg["content"].strip()
-        log.info("Command: %s", content)
+        log.info("Command message: %s", content[:120])
 
-        parts = content.split(None, 3)
-        cmd = parts[0].lower()
-
+        reply_lines: list[str] = []
+        changed = False
         try:
-            if cmd == "!help":
-                reply = HELP_TEXT
-            elif cmd == "!list":
-                reply = _cmd_list(raw)
-            elif cmd == "!remove" and len(parts) >= 2:
-                reply = _cmd_remove(raw, " ".join(parts[1:]))
-                config_changed = True
-            elif cmd == "!add" and len(parts) == 4:
-                sub, url, name = parts[1].lower(), parts[2], parts[3]
-                if sub == "product":
-                    reply = _cmd_add_product(raw, url, name)
-                    config_changed = True
-                elif sub == "category":
-                    reply = _cmd_add_category(raw, url, name)
-                    config_changed = True
-                else:
-                    reply = f"Unknown type `{sub}`. Use `product` or `category`."
-            elif cmd == "!add" and len(parts) < 4:
-                reply = "Usage: `!add product <url> <name>` or `!add category <url> <name>`"
-            else:
-                reply = "Unknown command. Type `!help` for available commands."
+            for cmd_parts in _parse_commands(content):
+                line_reply, line_changed = _dispatch(raw, cmd_parts)
+                reply_lines.append(line_reply)
+                changed = changed or line_changed
         except Exception as e:
-            reply = f"⚠️ Error: {e}"
-            log.exception("Command error for: %s", content)
+            reply_lines.append(f"⚠️ Error: {e}")
+            log.exception("Command error")
+
+        config_changed = config_changed or changed
+        reply = "\n".join(reply_lines) or "Done."
 
         try:
             discord.reply(channel_id, reply, reply_to=mid)
