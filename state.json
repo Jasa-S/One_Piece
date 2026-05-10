@@ -1,5 +1,9 @@
 {
   "categories": {
+    "https://brand.naver.com/pokemon/category/7d4ef8ffe7ca4427b42a1a61751656e4": {
+      "initialized": true,
+      "known_urls": []
+    },
     "https://www.saturn.de/de/brand/pokemon-sammelkartenspiel/tin-boxen": {
       "initialized": true,
       "known_urls": [
