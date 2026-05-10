@@ -99,18 +99,13 @@ class _Discord:
             f"{DISCORD_API}/channels/{channel_id}/messages/{message_id}",
             timeout=10,
         )
-        if r.status_code >= 300:
+        if r.status_code == 429:
+            retry_after = r.json().get("retry_after", 1)
+            log.warning("Rate limited on delete, sleeping %.1fs", retry_after)
+            time.sleep(retry_after)
+            self.delete_message(channel_id, message_id)
+        elif r.status_code not in (200, 204):
             log.warning("Delete failed: %s %s", r.status_code, r.text[:200])
-
-    def bulk_delete(self, channel_id: str, message_ids: list[str]) -> None:
-        """Bulk-delete up to 100 messages at once (must be <14 days old)."""
-        r = self._s.post(
-            f"{DISCORD_API}/channels/{channel_id}/messages/bulk-delete",
-            json={"messages": message_ids},
-            timeout=10,
-        )
-        if r.status_code >= 300:
-            log.warning("Bulk delete failed: %s %s", r.status_code, r.text[:200])
 
     def post(self, channel_id: str, content: str) -> dict:
         r = self._s.post(
@@ -124,10 +119,9 @@ class _Discord:
     def delete_all_messages(self, channel_id: str) -> int:
         """Delete every message in the channel. Returns total count deleted.
 
-        Uses bulk-delete (max 100, messages <14 days old) for recent messages,
-        and falls back to individual deletes for older ones.
-        Discord bulk-delete requires 2+ message IDs; single old messages are
-        deleted one by one.
+        Fetches messages in pages of 100 (oldest-first via before= cursor).
+        For each batch, tries bulk-delete first (works for messages <14 days old).
+        If bulk-delete fails (e.g. messages too old), falls back to one-by-one.
         """
         total = 0
         before: str | None = None
@@ -136,44 +130,49 @@ class _Discord:
             params: dict[str, Any] = {"limit": 100}
             if before:
                 params["before"] = before
+
             r = self._s.get(
                 f"{DISCORD_API}/channels/{channel_id}/messages",
                 params=params,
                 timeout=10,
             )
             r.raise_for_status()
-            batch = r.json()
+            batch: list[dict] = r.json()
+
             if not batch:
                 break
 
-            # Snowflake timestamp: messages older than 14 days can't be bulk-deleted
-            import datetime
-            cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=13, hours=23)
-            cutoff_ms = int(cutoff.timestamp() * 1000)
-            # Snowflake: upper 42 bits are ms since Discord epoch (2015-01-01)
-            discord_epoch_ms = 1420070400000
-            cutoff_snowflake = (cutoff_ms - discord_epoch_ms) << 22
+            ids = [m["id"] for m in batch]
 
-            recent = [m["id"] for m in batch if int(m["id"]) >= cutoff_snowflake]
-            old    = [m["id"] for m in batch if int(m["id"]) <  cutoff_snowflake]
-
-            # Bulk-delete recent messages (requires 2+)
-            if len(recent) >= 2:
-                self.bulk_delete(channel_id, recent)
-                total += len(recent)
-            elif len(recent) == 1:
-                self.delete_message(channel_id, recent[0])
+            if len(ids) >= 2:
+                # Attempt bulk delete
+                bulk_r = self._s.post(
+                    f"{DISCORD_API}/channels/{channel_id}/messages/bulk-delete",
+                    json={"messages": ids},
+                    timeout=10,
+                )
+                if bulk_r.status_code in (200, 204):
+                    total += len(ids)
+                    log.debug("Bulk-deleted %d messages", len(ids))
+                else:
+                    # Bulk delete failed (likely some messages >14 days) — delete individually
+                    log.warning(
+                        "Bulk delete failed (%s), falling back to individual deletes",
+                        bulk_r.status_code,
+                    )
+                    for mid in ids:
+                        self.delete_message(channel_id, mid)
+                        total += 1
+                        time.sleep(0.3)
+            else:
+                # Only 1 message — delete individually
+                self.delete_message(channel_id, ids[0])
                 total += 1
 
-            # Individual-delete old messages
-            for mid in old:
-                self.delete_message(channel_id, mid)
-                total += 1
-                time.sleep(0.3)  # avoid hitting the per-route rate limit
+            # Use the oldest message in the batch as the next "before" cursor
+            before = ids[-1]
 
-            before = batch[-1]["id"]
-
-            # Brief pause between pages to respect Discord rate limits
+            # Respect rate limits between pages
             time.sleep(0.5)
 
         return total
