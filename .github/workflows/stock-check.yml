@@ -14,7 +14,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     permissions:
-      contents: write          # needed to commit state.json back
+      contents: write
 
     steps:
       - name: Checkout repo
@@ -32,6 +32,11 @@ jobs:
       - name: Install Playwright browser
         run: playwright install chromium --with-deps
 
+      - name: Process Discord commands
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+        run: python -m tcg_notifier.discord_commands
+
       - name: Run stock check
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
@@ -46,12 +51,12 @@ jobs:
         run: |
           git config user.name  "tcg-notifier[bot]"
           git config user.email "tcg-notifier[bot]@users.noreply.github.com"
-          git add state.json
+          git add state.json discord_state.json config.yaml
           git diff --cached --quiet && exit 0
           git commit -m "chore: update state [skip ci]"
           for attempt in 1 2 3; do
             git push && break
             echo "Push failed (attempt $attempt), rebasing and retrying..."
             git pull --rebase
-            git add state.json
+            git add state.json discord_state.json config.yaml
           done
