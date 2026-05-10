@@ -6,6 +6,15 @@ from pathlib import Path
 
 import yaml
 
+DEFAULT_OOS = [
+    "Ausverkauft", "Nicht verfügbar", "Vergriffen",
+    "Derzeit nicht verfügbar", "Sold out", "Out of stock",
+]
+DEFAULT_IN_STOCK = [
+    "In den Warenkorb", "In den Einkaufswagen",
+    "Auf Lager", "Lieferbar", "Sofort lieferbar", "Add to cart",
+]
+
 
 @dataclass
 class Product:
