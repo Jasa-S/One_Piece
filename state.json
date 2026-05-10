@@ -6,8 +6,16 @@
     },
     "https://www.saturn.de/de/brand/pokemon-sammelkartenspiel/tin-boxen": {
       "initialized": true,
-      "known_urls": [],
-      "stock": {}
+      "known_urls": [
+        "https://www.saturn.de/de/product/_pokemon-14234-pkm-kp105-mini-tin-de-sammelkartenspiel-2992657.html",
+        "https://www.saturn.de/de/product/_the-pokemon-company-int-10566-pokemon-mini-tin-box-fix8-karmesin-and-purpur-prismatische-entwicklungen-sammelkarten-2972603.html",
+        "https://www.saturn.de/de/product/_the-pokemon-company-int-45865-pokemon-ex-kampfdeck-juli-sammelkarten-2933604.html"
+      ],
+      "stock": {
+        "https://www.saturn.de/de/product/_pokemon-14234-pkm-kp105-mini-tin-de-sammelkartenspiel-2992657.html": false,
+        "https://www.saturn.de/de/product/_the-pokemon-company-int-10566-pokemon-mini-tin-box-fix8-karmesin-and-purpur-prismatische-entwicklungen-sammelkarten-2972603.html": false,
+        "https://www.saturn.de/de/product/_the-pokemon-company-int-45865-pokemon-ex-kampfdeck-juli-sammelkarten-2933604.html": false
+      }
     },
     "https://www.saturn.de/de/brand/pokemon-sammelkartenspiel/top-trainer-boxen": {
       "initialized": true,
@@ -52,8 +60,14 @@
     },
     "https://www.saturn.de/de/promo-list/ent_brand_loa_pokemon_grid_premium_kollektionen": {
       "initialized": true,
-      "known_urls": [],
-      "stock": {}
+      "known_urls": [
+        "https://www.saturn.de/de/product/_pokemon-41092-cynthias-knakrack-ex-premium-k-mbe3-sammelkarten-2988491.html",
+        "https://www.saturn.de/de/product/_the-pokemon-company-int-pokemon-ex-premium-kollektion-sammelkarten-2977298.html"
+      ],
+      "stock": {
+        "https://www.saturn.de/de/product/_pokemon-41092-cynthias-knakrack-ex-premium-k-mbe3-sammelkarten-2988491.html": false,
+        "https://www.saturn.de/de/product/_the-pokemon-company-int-pokemon-ex-premium-kollektion-sammelkarten-2977298.html": false
+      }
     },
     "https://www.swatch.com/de-de/watches/new-watch-releases/": {
       "initialized": true,
@@ -145,7 +159,7 @@
       ]
     }
   },
-  "last_checked_at": "2026-05-10T22:48:32.922070+00:00",
+  "last_checked_at": "2026-05-10T22:54:55.871328+00:00",
   "products": {
     "https://brand.naver.com/pokemon/products/12747160892": {
       "in_stock": true
