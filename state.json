@@ -6,16 +6,8 @@
     },
     "https://www.saturn.de/de/brand/pokemon-sammelkartenspiel/tin-boxen": {
       "initialized": true,
-      "known_urls": [
-        "https://www.saturn.de/de/product/_pokemon-14234-pkm-kp105-mini-tin-de-sammelkartenspiel-2992657.html",
-        "https://www.saturn.de/de/product/_the-pokemon-company-int-10566-pokemon-mini-tin-box-fix8-karmesin-and-purpur-prismatische-entwicklungen-sammelkarten-2972603.html",
-        "https://www.saturn.de/de/product/_the-pokemon-company-int-45865-pokemon-ex-kampfdeck-juli-sammelkarten-2933604.html"
-      ],
-      "stock": {
-        "https://www.saturn.de/de/product/_pokemon-14234-pkm-kp105-mini-tin-de-sammelkartenspiel-2992657.html": false,
-        "https://www.saturn.de/de/product/_the-pokemon-company-int-10566-pokemon-mini-tin-box-fix8-karmesin-and-purpur-prismatische-entwicklungen-sammelkarten-2972603.html": false,
-        "https://www.saturn.de/de/product/_the-pokemon-company-int-45865-pokemon-ex-kampfdeck-juli-sammelkarten-2933604.html": false
-      }
+      "known_urls": [],
+      "stock": {}
     },
     "https://www.saturn.de/de/brand/pokemon-sammelkartenspiel/top-trainer-boxen": {
       "initialized": true,
@@ -61,35 +53,13 @@
     },
     "https://www.saturn.de/de/promo-list/ent_brand_loa_pokemon_grid_kollektionen": {
       "initialized": true,
-      "known_urls": [
-        "https://www.saturn.de/de/product/_pokemon-10603-pkm-kp085-accessory-pouch-collecti-sammelkarten-set-2980565.html",
-        "https://www.saturn.de/de/product/_the-pokemon-company-int-10511-pokemon-kp085-binder-collection-mbe3-sammelkarten-2966410.html",
-        "https://www.saturn.de/de/product/_the-pokemon-company-int-10532-pokemon-kp085-top-trainer-box-mbe4-sammelkarten-2965784.html",
-        "https://www.saturn.de/de/product/_the-pokemon-company-int-10544-pokemon-kp085-poster-collection-mbe6-sammelkarten-2965785.html",
-        "https://www.saturn.de/de/product/_the-pokemon-company-int-20305-pkm-v-box-de-sortiert-2459607.html",
-        "https://www.saturn.de/de/product/_the-pokemon-company-int-45557-pokemon-kp035-poster-box-sammelkarten-2885372.html",
-        "https://www.saturn.de/de/product/_the-pokemon-company-int-pokemon-spezial-kollektion-sammelkarten-2977301.html"
-      ],
-      "stock": {
-        "https://www.saturn.de/de/product/_pokemon-10603-pkm-kp085-accessory-pouch-collecti-sammelkarten-set-2980565.html": false,
-        "https://www.saturn.de/de/product/_the-pokemon-company-int-10511-pokemon-kp085-binder-collection-mbe3-sammelkarten-2966410.html": false,
-        "https://www.saturn.de/de/product/_the-pokemon-company-int-10532-pokemon-kp085-top-trainer-box-mbe4-sammelkarten-2965784.html": false,
-        "https://www.saturn.de/de/product/_the-pokemon-company-int-10544-pokemon-kp085-poster-collection-mbe6-sammelkarten-2965785.html": false,
-        "https://www.saturn.de/de/product/_the-pokemon-company-int-20305-pkm-v-box-de-sortiert-2459607.html": false,
-        "https://www.saturn.de/de/product/_the-pokemon-company-int-45557-pokemon-kp035-poster-box-sammelkarten-2885372.html": false,
-        "https://www.saturn.de/de/product/_the-pokemon-company-int-pokemon-spezial-kollektion-sammelkarten-2977301.html": false
-      }
+      "known_urls": [],
+      "stock": {}
     },
     "https://www.saturn.de/de/promo-list/ent_brand_loa_pokemon_grid_premium_kollektionen": {
       "initialized": true,
-      "known_urls": [
-        "https://www.saturn.de/de/product/_pokemon-41092-cynthias-knakrack-ex-premium-k-mbe3-sammelkarten-2988491.html",
-        "https://www.saturn.de/de/product/_the-pokemon-company-int-pokemon-ex-premium-kollektion-sammelkarten-2977298.html"
-      ],
-      "stock": {
-        "https://www.saturn.de/de/product/_pokemon-41092-cynthias-knakrack-ex-premium-k-mbe3-sammelkarten-2988491.html": false,
-        "https://www.saturn.de/de/product/_the-pokemon-company-int-pokemon-ex-premium-kollektion-sammelkarten-2977298.html": false
-      }
+      "known_urls": [],
+      "stock": {}
     },
     "https://www.swatch.com/de-de/watches/new-watch-releases/": {
       "initialized": true,
@@ -181,19 +151,19 @@
       ]
     }
   },
-  "last_checked_at": "2026-05-10T22:11:27.364698+00:00",
+  "last_checked_at": "2026-05-10T22:29:00.241680+00:00",
   "products": {
     "https://brand.naver.com/pokemon/products/12747160892": {
-      "in_stock": false
+      "in_stock": true
     },
     "https://brand.naver.com/pokemon/products/13053907080": {
-      "in_stock": false
+      "in_stock": true
     },
     "https://pokegeodude.shop/One-Piece-Heroines-Edition-Extra-Booster-Display-EB03-Japanisch": {
       "in_stock": false
     },
     "https://www.gate-to-the-games.de/Pokemon-Erste-Partner-Kollektion-deutsch": {
-      "in_stock": false
+      "in_stock": true
     },
     "https://www.gate-to-the-games.de/Pokemon-Karten-Mega-Entwicklung-Wachsendes-Chaos-Top-Trainer-Box-deutsch": {
       "in_stock": false
