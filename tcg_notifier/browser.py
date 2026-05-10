@@ -42,28 +42,20 @@ _BORLABS_PAYLOAD = json.dumps({
     "version": "3",
 })
 
+# Init script that pre-sets the Borlabs consent key before any page JS runs.
+# This runs automatically on every navigation in contexts where it is added.
+_BORLABS_INIT_SCRIPT = f"""
+(function() {{
+    try {{
+        localStorage.setItem('borlabs-cookie', {json.dumps(_BORLABS_PAYLOAD)});
+    }} catch(e) {{}}
+}})();
+"""
+
 
 def _is_borlabs_site(url: str) -> bool:
     host = urlsplit(url).netloc.lower()
     return "gate-to-the-games.de" in host
-
-
-def _inject_borlabs_consent(page, url: str) -> None:
-    from urllib.parse import urlsplit
-    parts = urlsplit(url)
-    origin = f"{parts.scheme}://{parts.netloc}"
-    try:
-        page.goto(origin, wait_until="domcontentloaded", timeout=15_000)
-    except Exception:
-        pass
-    try:
-        page.evaluate(
-            "(payload) => { localStorage.setItem('borlabs-cookie', payload); }",
-            _BORLABS_PAYLOAD,
-        )
-        log.debug("Borlabs consent injected into localStorage for %s", origin)
-    except Exception as exc:
-        log.debug("Borlabs localStorage injection failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +184,12 @@ def _browser_page(url: str) -> Generator:
     page.add_init_script(
         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
     )
+    # Pre-inject Borlabs consent for gate-to-the-games.de so the cookie banner
+    # never blocks the product page content. The init script runs before any
+    # page JS, so the consent flag is already set when the shop reads it.
+    if _is_borlabs_site(url):
+        page.add_init_script(_BORLABS_INIT_SCRIPT)
+        log.debug("Borlabs consent init script added for %s", url)
     try:
         yield page
     finally:
@@ -495,8 +493,8 @@ def _check_naver(page, product: Product) -> tuple[bool | None, str]:
 # ---------------------------------------------------------------------------
 
 def _navigate_with_consent(page, url: str) -> None:
-    if _is_borlabs_site(url):
-        _inject_borlabs_consent(page, url)
+    # Note: Borlabs consent for gate-to-the-games.de is handled via an init
+    # script added in _browser_page(), so no prior navigation is needed here.
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=20_000)
     except Exception:
@@ -585,7 +583,14 @@ def check_product_browser(product: Product) -> tuple[bool | None, str]:
             if found_oos:
                 return False, f"oos phrase matched: {found_oos!r}"
 
-            return False, "no configured phrase matched (assumed out of stock)"
+            # No phrase matched — default to in-stock to avoid false OOS alerts.
+            # If the consent banner blocked the page content, we'd rather not
+            # send a false "sold out" notification.
+            log.debug(
+                "Generic: no phrase matched for %s — defaulting to in-stock",
+                product.url,
+            )
+            return True, "no configured phrase matched (defaulting to in-stock)"
 
     except Exception as e:
         log.warning("Browser product check failed for %s: %s", product.url, e)
