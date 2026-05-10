@@ -14,6 +14,7 @@ class Product:
     shop: str = ""
     in_stock_text: list[str] = field(default_factory=list)
     out_of_stock_text: list[str] = field(default_factory=list)
+    use_browser: bool = False  # set True for JS-rendered shops
 
 
 @dataclass
@@ -43,6 +44,7 @@ class Config:
     defaults: Defaults
     products: list[Product]
     categories: list[Category]
+    command_channel_id: str = ""
 
 
 def load_config(path: Path) -> Config:
@@ -72,9 +74,12 @@ def load_config(path: Path) -> Config:
     if not products and not categories:
         raise ValueError(f"No products or categories configured in {path}.")
 
+    command_channel_id = str((data.get("discord") or {}).get("command_channel_id", "") or "")
+
     return Config(
         webhook_url=webhook_url,
         defaults=defaults,
         products=products,
         categories=categories,
+        command_channel_id=command_channel_id,
     )
