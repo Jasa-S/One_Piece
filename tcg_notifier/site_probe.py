@@ -31,6 +31,7 @@ _KNOWN_PATTERNS: list[tuple[str, str]] = [
     ("mediamarkt.de", "/de/product/"),
     ("amazon.de", "/dp/"),
     ("amazon.com", "/dp/"),
+    ("amazon.co.jp", "/dp/"),
     ("smythstoys.com", "/p/"),
 ]
 
@@ -39,11 +40,28 @@ _KNOWN_SHOPS: list[tuple[str, str]] = [
     ("mediamarkt.de", "Media Markt"),
     ("amazon.de", "Amazon.de"),
     ("amazon.com", "Amazon"),
+    ("amazon.co.jp", "Amazon JP"),
     ("jk-entertainment.biz", "JK Entertainment"),
     ("pokegeodude.de", "PokéGeoDude"),
     ("smythstoys.com", "Smyths Toys"),
     ("gate-to-the-games.de", "Gate to the Games"),
     ("spielraum.wien", "Spielraum Wien"),
+]
+
+# Domains that are ALWAYS browser-only — probing via plain HTTP is pointless
+# because they block bots (CAPTCHA, 503, or silent robot-check page).
+_ALWAYS_BROWSER: list[str] = [
+    "amazon.de",
+    "amazon.com",
+    "amazon.co.jp",
+    "amazon.co.uk",
+    "amazon.fr",
+    "amazon.es",
+    "amazon.it",
+    "amazon.pl",
+    "amazon.nl",
+    "saturn.de",
+    "mediamarkt.de",
 ]
 
 
@@ -62,6 +80,12 @@ def probe(url: str) -> dict:
         "shop": _guess_shop(url),
         "note": "",
     }
+
+    # Hard-coded browser-only domains — skip HTTP probe entirely.
+    if _is_always_browser(url):
+        result["needs_browser"] = True
+        result["note"] = "known bot-protected domain — browser required"
+        return result
 
     try:
         resp = requests.get(url, headers=_HEADERS, timeout=15, allow_redirects=True)
@@ -94,6 +118,14 @@ def probe(url: str) -> dict:
 
     result["note"] = "plain HTTP works"
     return result
+
+
+def _is_always_browser(url: str) -> bool:
+    host = re.search(r"https?://(?:www\.)?([^/]+)", url)
+    if not host:
+        return False
+    domain = host.group(1).lower()
+    return any(domain == d or domain.endswith("." + d) for d in _ALWAYS_BROWSER)
 
 
 def _guess_pattern(url: str) -> str | None:
