@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import re
 import threading
 import time
 from contextlib import contextmanager
-from typing import Generator
+from typing import Callable, Generator
 from urllib.parse import urljoin, urlsplit
 
 from .category import FoundProduct, _normalize
@@ -15,26 +16,124 @@ from .config import Category, DEFAULT_USER_AGENT, NAVER_USER_AGENT, Product, is_
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Shared Playwright browser (one process, reused across all checks)
+# Browser thread
+# ---------------------------------------------------------------------------
+# Playwright's sync API is built on greenlets and is NOT thread-safe.
+# All Playwright operations must run on the single thread that called
+# sync_playwright().start(). We enforce this by running one permanent daemon
+# thread (_browser_thread) that owns the Playwright instance and processes
+# work items from _BROWSER_QUEUE one at a time.
+#
+# Public callers (check_product_browser / fetch_category_browser) submit a
+# callable to the queue and block on a threading.Event until the result is
+# ready. Worker threads in ThreadPoolExecutor never touch Playwright directly.
 # ---------------------------------------------------------------------------
 
-_lock = threading.Lock()
-_pw_instance = None
-_browser_instance = None
+_SENTINEL = object()  # signals the browser thread to shut down
+
+class _WorkItem:
+    __slots__ = ("fn", "event", "result", "exc")
+    def __init__(self, fn: Callable):
+        self.fn = fn
+        self.event = threading.Event()
+        self.result = None
+        self.exc: BaseException | None = None
+
+
+_BROWSER_QUEUE: queue.Queue = queue.Queue()
+_browser_thread_handle: threading.Thread | None = None
+_browser_thread_lock = threading.Lock()
+
+# Playwright objects — only ever accessed from _browser_thread
+_pw = None
+_browser = None
 
 _NAVER_QUEUE_RETRIES = 4
 _NAVER_QUEUE_RETRY_DELAY = 8
 
 
+def _browser_thread_main() -> None:
+    global _pw, _browser
+    sync_playwright = _get_playwright()
+    if sync_playwright is None:
+        log.error("Browser thread: playwright not available, exiting.")
+        return
+
+    _pw = sync_playwright().start()
+    _browser = _pw.chromium.launch(
+        headless=True,
+        args=[
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-blink-features=AutomationControlled",
+        ],
+    )
+    log.info("Browser thread: Playwright browser launched.")
+
+    while True:
+        item = _BROWSER_QUEUE.get()
+        if item is _SENTINEL:
+            break
+        try:
+            item.result = item.fn()
+        except Exception as exc:
+            item.exc = exc
+        finally:
+            item.event.set()
+
+    try:
+        _browser.close()
+    except Exception:
+        pass
+    try:
+        _pw.stop()
+    except Exception:
+        pass
+    log.info("Browser thread: Playwright browser closed.")
+
+
+def _ensure_browser_thread() -> None:
+    global _browser_thread_handle
+    with _browser_thread_lock:
+        if _browser_thread_handle is None or not _browser_thread_handle.is_alive():
+            _browser_thread_handle = threading.Thread(
+                target=_browser_thread_main, daemon=True, name="playwright-browser"
+            )
+            _browser_thread_handle.start()
+
+
+def _run_in_browser_thread(fn: Callable):
+    """Submit fn to the browser thread and block until it completes."""
+    _ensure_browser_thread()
+    item = _WorkItem(fn)
+    _BROWSER_QUEUE.put(item)
+    item.event.wait()
+    if item.exc is not None:
+        raise item.exc
+    return item.result
+
+
+def close_shared_browser() -> None:
+    """Signal the browser thread to shut down and wait for it to finish."""
+    global _browser_thread_handle
+    _BROWSER_QUEUE.put(_SENTINEL)
+    if _browser_thread_handle is not None:
+        _browser_thread_handle.join(timeout=15)
+        _browser_thread_handle = None
+    log.info("Browser thread shut down.")
+
+
+# kept for any external callers that might import it
+def get_shared_browser():
+    return _pw, _browser
+
+
 # ---------------------------------------------------------------------------
-# Generic cookie consent click-through
+# Playwright helpers (MUST only be called from the browser thread)
 # ---------------------------------------------------------------------------
 
-# Usercentrics (used by gate-to-the-games.de) renders its accept button
-# asynchronously — we wait explicitly for it before falling through to the
-# broader selector/text loop.
 _UC_ACCEPT_SELECTOR = "button[data-testid='uc-accept-all-button']"
-_UC_WAIT_MS = 4_000  # max ms to wait for the UC button to appear
+_UC_WAIT_MS = 4_000
 
 _CONSENT_SELECTORS = [
     "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
@@ -64,9 +163,7 @@ _CONSENT_BUTTON_TEXTS = [
 
 
 def _dismiss_consent(page) -> None:
-    # 1. Usercentrics: wait up to _UC_WAIT_MS for its async accept button,
-    #    then click it. This handles gate-to-the-games.de and any other shop
-    #    running Usercentrics.
+    # 1. Usercentrics — wait for its async accept button
     try:
         page.wait_for_selector(_UC_ACCEPT_SELECTOR, timeout=_UC_WAIT_MS)
         el = page.query_selector(_UC_ACCEPT_SELECTOR)
@@ -76,9 +173,9 @@ def _dismiss_consent(page) -> None:
             page.wait_for_timeout(800)
             return
     except Exception:
-        pass  # UC not present on this page — fall through
+        pass
 
-    # 2. Other CMP selectors (Cookiebot, OneTrust, etc.)
+    # 2. Other CMP selectors
     for sel in _CONSENT_SELECTORS:
         try:
             el = page.query_selector(sel)
@@ -90,7 +187,7 @@ def _dismiss_consent(page) -> None:
         except Exception:
             pass
 
-    # 3. Text-based fallback for unlabelled accept buttons
+    # 3. Text-based fallback
     for text in _CONSENT_BUTTON_TEXTS:
         try:
             btn = page.get_by_role("button", name=re.compile(re.escape(text), re.IGNORECASE)).first
@@ -115,57 +212,18 @@ def _get_playwright():
         return None
 
 
-def get_shared_browser():
-    global _pw_instance, _browser_instance
-    with _lock:
-        if _browser_instance is None or not _browser_instance.is_connected():
-            sync_playwright = _get_playwright()
-            if sync_playwright is None:
-                return None, None
-            _pw_instance = sync_playwright().start()
-            _browser_instance = _pw_instance.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled",
-                ],
-            )
-            log.info("Shared Playwright browser launched.")
-    return _pw_instance, _browser_instance
-
-
-def close_shared_browser() -> None:
-    global _pw_instance, _browser_instance
-    with _lock:
-        if _browser_instance is not None:
-            try:
-                _browser_instance.close()
-            except Exception:
-                pass
-            _browser_instance = None
-        if _pw_instance is not None:
-            try:
-                _pw_instance.stop()
-            except Exception:
-                pass
-            _pw_instance = None
-    log.info("Shared Playwright browser closed.")
-
-
 @contextmanager
 def _browser_page(url: str) -> Generator:
-    """Open a new page in the shared browser, choosing locale/UA by URL."""
-    korean = is_naver_smartstore(url)  # True for brand.naver.com too (see config.py)
+    """Open a new Playwright page. Must only be called from the browser thread."""
+    korean = is_naver_smartstore(url)
     locale = "ko-KR" if korean else "de-DE"
     ua = NAVER_USER_AGENT if korean else DEFAULT_USER_AGENT
     accept_lang = "ko-KR,ko;q=0.9" if korean else "de-DE,de;q=0.9,en;q=0.6"
 
-    _, browser = get_shared_browser()
-    if browser is None:
-        raise RuntimeError("Playwright browser not available")
+    if _browser is None:
+        raise RuntimeError("Playwright browser not initialised")
 
-    ctx = browser.new_context(
+    ctx = _browser.new_context(
         locale=locale,
         user_agent=ua,
         extra_http_headers={"Accept-Language": accept_lang},
@@ -188,18 +246,29 @@ def _browser_page(url: str) -> Generator:
             pass
 
 
+def _navigate_with_consent(page, url: str) -> None:
+    try:
+        page.goto(url, wait_until="domcontentloaded", timeout=20_000)
+    except Exception:
+        log.warning("domcontentloaded timed out for %s, using partial content", url)
+    _dismiss_consent(page)
+    try:
+        page.wait_for_load_state("networkidle", timeout=8_000)
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
-# brand.naver.com — combined __NEXT_DATA__ + body-text check
+# brand.naver.com
 # ---------------------------------------------------------------------------
 
 _BRAND_NAVER_IN_STOCK_PHRASES = [
-    "\uad6c\ub9e4\ud558\uae30",   # 구매하기  (Buy now)
-    "\uc7a5\ubc14\uad6c\ub2c8",   # 장바구니 (Add to cart)
+    "\uad6c\ub9e4\ud558\uae30",
+    "\uc7a5\ubc14\uad6c\ub2c8",
 ]
-
 _BRAND_NAVER_OOS_PHRASES_EXACT = [
-    "\ud488\uc808\ub418\uc5c8\uc2b5\ub2c8\ub2e4",  # 품절되었습니다
-    "\uc77c\uc2dc\ud488\uc808",                      # 일시품절
+    "\ud488\uc808\ub418\uc5c8\uc2b5\ub2c8\ub2e4",
+    "\uc77c\uc2dc\ud488\uc808",
 ]
 _BRAND_NAVER_OOS_STANDALONE = re.compile(
     r"(?<![\uAC00-\uD7A3\w])\ud488\uc808(?![\uAC00-\uD7A3\w])"
@@ -210,11 +279,11 @@ def _fetch_next_data(page, url: str) -> str | None:
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=20_000)
     except Exception:
-        log.debug("brand.naver: domcontentloaded timed out, using partial content")
+        log.debug("brand.naver: domcontentloaded timed out")
     try:
         page.wait_for_load_state("networkidle", timeout=20_000)
     except Exception:
-        log.debug("brand.naver: networkidle timed out, proceeding with current DOM")
+        log.debug("brand.naver: networkidle timed out")
     try:
         return page.eval_on_selector("#__NEXT_DATA__", "el => el.textContent")
     except Exception:
@@ -222,22 +291,18 @@ def _fetch_next_data(page, url: str) -> str | None:
 
 
 def _check_naver_brand(page, product: Product) -> tuple[bool | None, str]:
-    next_data_raw: str | None = _fetch_next_data(page, product.url)
+    next_data_raw = _fetch_next_data(page, product.url)
 
     attempt = 0
     while not next_data_raw and attempt < _NAVER_QUEUE_RETRIES:
         attempt += 1
-        log.warning(
-            "brand.naver: no __NEXT_DATA__ for %s — retry %d/%d in %ds",
-            product.url, attempt, _NAVER_QUEUE_RETRIES, _NAVER_QUEUE_RETRY_DELAY,
-        )
+        log.warning("brand.naver: no __NEXT_DATA__ — retry %d/%d in %ds",
+                    attempt, _NAVER_QUEUE_RETRIES, _NAVER_QUEUE_RETRY_DELAY)
         time.sleep(_NAVER_QUEUE_RETRY_DELAY)
         next_data_raw = _fetch_next_data(page, product.url)
 
     next_data_sold_out: bool | None = None
     if next_data_raw:
-        if attempt:
-            log.info("brand.naver: real page loaded after %d retry/retries", attempt)
         try:
             data = json.loads(next_data_raw)
             next_data_sold_out = _extract_sold_out_targeted(data)
@@ -246,10 +311,7 @@ def _check_naver_brand(page, product: Product) -> tuple[bool | None, str]:
         except Exception as exc:
             log.debug("brand.naver: __NEXT_DATA__ parse error: %s", exc)
     else:
-        log.warning(
-            "brand.naver: no __NEXT_DATA__ after %d retries for %s — continuing to body check",
-            _NAVER_QUEUE_RETRIES, product.url,
-        )
+        log.warning("brand.naver: no __NEXT_DATA__ after retries for %s", product.url)
 
     body_text = ""
     try:
@@ -265,29 +327,23 @@ def _check_naver_brand(page, product: Product) -> tuple[bool | None, str]:
         if phrase in body_text:
             return False, f"body OOS phrase: {phrase!r}"
     if _BRAND_NAVER_OOS_STANDALONE.search(body_text):
-        return False, "body standalone 품절 matched"
+        return False, "body standalone \ud488\uc808 matched"
 
     if next_data_sold_out is False:
         return True, "__NEXT_DATA__ soldOut=false"
 
-    log.debug(
-        "brand.naver: no conclusive stock signal for %s — defaulting to in-stock",
-        product.url,
-    )
     return True, "no OOS signal found (defaulting to in-stock)"
 
 
 def _extract_sold_out_targeted(data: dict) -> bool | None:
     try:
         page_props = (data.get("props") or {}).get("pageProps") or {}
-
         for key in ("product", "item", "productDetail", "detail"):
             obj = page_props.get(key)
             if isinstance(obj, dict):
                 result = _read_stock_fields(obj)
                 if result is not None:
                     return result
-
         for key in ("initialState", "initialData"):
             obj = page_props.get(key)
             if isinstance(obj, dict):
@@ -297,7 +353,6 @@ def _extract_sold_out_targeted(data: dict) -> bool | None:
                         result = _read_stock_fields(inner)
                         if result is not None:
                             return result
-
     except Exception:
         pass
     return None
@@ -317,28 +372,8 @@ def _read_stock_fields(obj: dict) -> bool | None:
     return None
 
 
-def _deep_search_sold_out(obj, depth: int) -> bool | None:
-    if depth == 0 or not isinstance(obj, dict):
-        return None
-    result = _read_stock_fields(obj)
-    if result is not None:
-        return result
-    for v in obj.values():
-        if isinstance(v, dict):
-            result = _deep_search_sold_out(v, depth - 1)
-            if result is not None:
-                return result
-        elif isinstance(v, list):
-            for item in v:
-                if isinstance(item, dict):
-                    result = _deep_search_sold_out(item, depth - 1)
-                    if result is not None:
-                        return result
-    return None
-
-
 # ---------------------------------------------------------------------------
-# Naver Smartstore helpers
+# Naver Smartstore
 # ---------------------------------------------------------------------------
 
 _NAVER_OOS_SELECTORS = [
@@ -352,7 +387,6 @@ _NAVER_OOS_SELECTORS = [
     ".sold_out",
     "#SOLD_OUT",
 ]
-
 _NAVER_IN_STOCK_SELECTORS = [
     "main button[class*='buy']:not([disabled]):not([aria-disabled='true'])",
     "main button[class*='purchase']:not([disabled]):not([aria-disabled='true'])",
@@ -368,13 +402,13 @@ def _check_naver(page, product: Product) -> tuple[bool | None, str]:
     try:
         page.wait_for_load_state("networkidle", timeout=15_000)
     except Exception:
-        log.debug("Naver: networkidle timeout, proceeding with current DOM")
+        log.debug("Naver: networkidle timeout")
 
     for sel in _NAVER_OOS_SELECTORS:
         try:
             el = page.query_selector(sel)
             if el and el.is_visible():
-                return False, f"sold-out selector matched: {sel!r}"
+                return False, f"sold-out selector: {sel!r}"
         except Exception:
             pass
 
@@ -382,7 +416,7 @@ def _check_naver(page, product: Product) -> tuple[bool | None, str]:
         try:
             el = page.query_selector(sel)
             if el and el.is_visible() and el.is_enabled():
-                return True, f"in-stock selector matched: {sel!r}"
+                return True, f"in-stock selector: {sel!r}"
         except Exception:
             pass
 
@@ -394,11 +428,11 @@ def _check_naver(page, product: Product) -> tuple[bool | None, str]:
     text = body_text.lower()
     found_oos = next((s for s in product.out_of_stock_text if s.lower() in text), None)
     if found_oos:
-        return False, f"oos phrase matched: {found_oos!r}"
+        return False, f"oos phrase: {found_oos!r}"
 
     found_in = next((s for s in product.in_stock_text if s.lower() in text), None)
     if found_in:
-        return True, f"in-stock phrase matched: {found_in!r}"
+        return True, f"in-stock phrase: {found_in!r}"
 
     try:
         scripts = page.query_selector_all("script[type='application/ld+json']")
@@ -406,60 +440,71 @@ def _check_naver(page, product: Product) -> tuple[bool | None, str]:
             try:
                 content = script.inner_html().lower()
                 if "instock" in content or "in_stock" in content:
-                    return True, "JSON-LD availability: InStock"
+                    return True, "JSON-LD: InStock"
                 if "outofstock" in content or "out_of_stock" in content or "soldout" in content:
-                    return False, "JSON-LD availability: OutOfStock"
+                    return False, "JSON-LD: OutOfStock"
             except Exception:
                 pass
     except Exception:
         pass
 
     try:
-        next_data_raw = page.eval_on_selector("#__NEXT_DATA__", "el => el.textContent")
-        if next_data_raw:
-            data = json.loads(next_data_raw)
+        raw = page.eval_on_selector("#__NEXT_DATA__", "el => el.textContent")
+        if raw:
+            data = json.loads(raw)
             sold_out = _extract_sold_out_targeted(data)
             if sold_out is True:
-                return False, "__NEXT_DATA__ soldOut=true (smartstore fallback)"
+                return False, "__NEXT_DATA__ soldOut=true"
             if sold_out is False:
-                return True, "__NEXT_DATA__ soldOut=false (smartstore fallback)"
+                return True, "__NEXT_DATA__ soldOut=false"
     except Exception:
         pass
 
-    log.debug(
-        "Naver smartstore: no conclusive stock signal for %s — defaulting to in-stock",
-        product.url,
-    )
     return True, "no OOS signal found (defaulting to in-stock)"
 
 
 # ---------------------------------------------------------------------------
-# Shared consent + navigation helper
+# Public API — these are called from worker threads and dispatch to browser
 # ---------------------------------------------------------------------------
 
-def _navigate_with_consent(page, url: str) -> None:
+def check_product_browser(product: Product) -> tuple[bool | None, str]:
+    """Check stock on a JS-rendered product page.
+
+    Safe to call from any thread; actual Playwright work runs on the
+    dedicated browser thread via _run_in_browser_thread.
+    """
+    def _work():
+        host = urlsplit(product.url).netloc.lower()
+        with _browser_page(product.url) as page:
+            if "brand.naver.com" in host:
+                return _check_naver_brand(page, product)
+            _navigate_with_consent(page, product.url)
+            if is_naver_smartstore(product.url):
+                return _check_naver(page, product)
+            text = page.inner_text("body").lower()
+            found_in = next((s for s in product.in_stock_text if s.lower() in text), None)
+            if found_in:
+                return True, f"in-stock phrase matched: {found_in!r}"
+            found_oos = next((s for s in product.out_of_stock_text if s.lower() in text), None)
+            if found_oos:
+                return False, f"oos phrase matched: {found_oos!r}"
+            log.debug("Generic: no phrase matched for %s — defaulting to in-stock", product.url)
+            return True, "no configured phrase matched (defaulting to in-stock)"
+
     try:
-        page.goto(url, wait_until="domcontentloaded", timeout=20_000)
-    except Exception:
-        log.warning("domcontentloaded timed out for %s, using partial content", url)
-    _dismiss_consent(page)
-    # After dismissing the consent overlay, wait briefly for the real page
-    # content (add-to-cart button, stock badge) to render.
-    try:
-        page.wait_for_load_state("networkidle", timeout=8_000)
-    except Exception:
-        pass
+        return _run_in_browser_thread(_work)
+    except Exception as e:
+        log.warning("Browser product check failed for %s: %s", product.url, e)
+        return None, str(e)
 
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 def fetch_category_browser(category: Category) -> list[FoundProduct] | None:
-    """Fetch a JS-rendered category page using the shared Chromium browser."""
-    pattern = re.compile(category.link_pattern) if category.link_pattern else None
+    """Fetch a JS-rendered category page.
 
-    try:
+    Safe to call from any thread; dispatches to the browser thread.
+    """
+    def _work():
+        pattern = re.compile(category.link_pattern) if category.link_pattern else None
         with _browser_page(category.url) as page:
             _navigate_with_consent(page, category.url)
 
@@ -503,42 +548,8 @@ def fetch_category_browser(category: Category) -> list[FoundProduct] | None:
 
         return [FoundProduct(url=u, title=t) for u, t in found.items()]
 
+    try:
+        return _run_in_browser_thread(_work)
     except Exception as e:
         log.warning("Browser category fetch failed for %s: %s", category.url, e)
         return None
-
-
-def check_product_browser(product: Product) -> tuple[bool | None, str]:
-    """Check stock on a JS-rendered product page using the shared browser."""
-    host = urlsplit(product.url).netloc.lower()
-
-    try:
-        with _browser_page(product.url) as page:
-            if "brand.naver.com" in host:
-                return _check_naver_brand(page, product)
-
-            _navigate_with_consent(page, product.url)
-
-            if is_naver_smartstore(product.url):
-                return _check_naver(page, product)
-
-            text = page.inner_text("body").lower()
-
-            found_in = next((s for s in product.in_stock_text if s.lower() in text), None)
-            if found_in:
-                return True, f"in-stock phrase matched: {found_in!r}"
-
-            found_oos = next((s for s in product.out_of_stock_text if s.lower() in text), None)
-            if found_oos:
-                return False, f"oos phrase matched: {found_oos!r}"
-
-            # No phrase matched — default to in-stock to avoid false OOS alerts.
-            log.debug(
-                "Generic: no phrase matched for %s — defaulting to in-stock",
-                product.url,
-            )
-            return True, "no configured phrase matched (defaulting to in-stock)"
-
-    except Exception as e:
-        log.warning("Browser product check failed for %s: %s", product.url, e)
-        return None, str(e)
