@@ -5,26 +5,5 @@ defaults:
   check_interval_seconds: 300
   jitter_seconds: 60
   request_timeout_seconds: 20
-products:
-- name: Phantasmal Flames
-  shop: brand.naver.com
-  url: https://brand.naver.com/pokemon/products/12747160892
-  out_of_stock_text:
-  - Ausverkauft
-  - Nicht verfügbar
-  - Vergriffen
-  - Derzeit nicht verfügbar
-  - Sold out
-  - Out of stock
-  - 품절
-  - 일시품절
-  in_stock_text:
-  - In den Warenkorb
-  - In den Einkaufswagen
-  - Auf Lager
-  - Lieferbar
-  - Sofort lieferbar
-  - Add to cart
-  - 구매하기
-  - 장바구니
+products: []
 categories: []
