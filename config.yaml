@@ -1,47 +1,38 @@
-# Webhook URL is injected via the DISCORD_WEBHOOK_URL GitHub secret.
-# If running locally, paste your webhook URL here instead.
 discord:
-  webhook_url: ""
-  command_channel_id: "1502947222981967904"
-
+  webhook_url: ''
+  command_channel_id: '1502947222981967904'
 defaults:
   check_interval_seconds: 300
   jitter_seconds: 60
   request_timeout_seconds: 20
-
-# --- Specific products to watch for stock changes ---
 products: []
-
-# --- Category pages to watch for NEW listings ---
-# First run saves all current items as baseline (no alerts).
-# Every subsequent run alerts on any new product URL that appears.
 categories:
-  - name: "Pokemon Tin-Boxen @ Saturn"
-    shop: "Saturn"
-    url: "https://www.saturn.de/de/brand/pokemon-sammelkartenspiel/tin-boxen"
-    link_pattern: "/de/product/"
-    use_browser: true
-
-  - name: "Pokemon Kollektionen @ Saturn"
-    shop: "Saturn"
-    url: "https://www.saturn.de/de/promo-list/ent_brand_loa_pokemon_grid_kollektionen"
-    link_pattern: "/de/product/"
-    use_browser: true
-
-  - name: "Pokemon Premium Kollektionen @ Saturn"
-    shop: "Saturn"
-    url: "https://www.saturn.de/de/promo-list/ent_brand_loa_pokemon_grid_premium_kollektionen"
-    link_pattern: "/de/product/"
-    use_browser: true
-
-  - name: "Pokemon Top Trainer Boxen @ Saturn"
-    shop: "Saturn"
-    url: "https://www.saturn.de/de/brand/pokemon-sammelkartenspiel/top-trainer-boxen"
-    link_pattern: "/de/product/"
-    use_browser: true
-
-  - name: "Pokemon TCG Suche @ Saturn"
-    shop: "Saturn"
-    url: "https://www.saturn.de/de/promo-list/ent_brand_dpl_pokemon_tcg_sat?query=ent_brand_dpl_pokemon_tcg_sat&brand=POKEMON&marketplace=SATURN&page=2"
-    link_pattern: "/de/product/"
-    use_browser: true
+- name: Pokemon Tin-Boxen @ Saturn
+  shop: Saturn
+  url: https://www.saturn.de/de/brand/pokemon-sammelkartenspiel/tin-boxen
+  link_pattern: /de/product/
+  use_browser: true
+- name: Pokemon Kollektionen @ Saturn
+  shop: Saturn
+  url: https://www.saturn.de/de/promo-list/ent_brand_loa_pokemon_grid_kollektionen
+  link_pattern: /de/product/
+  use_browser: true
+- name: Pokemon Premium Kollektionen @ Saturn
+  shop: Saturn
+  url: https://www.saturn.de/de/promo-list/ent_brand_loa_pokemon_grid_premium_kollektionen
+  link_pattern: /de/product/
+  use_browser: true
+- name: Pokemon Top Trainer Boxen @ Saturn
+  shop: Saturn
+  url: https://www.saturn.de/de/brand/pokemon-sammelkartenspiel/top-trainer-boxen
+  link_pattern: /de/product/
+  use_browser: true
+- name: Pokemon TCG Suche @ Saturn
+  shop: Saturn
+  url: https://www.saturn.de/de/promo-list/ent_brand_dpl_pokemon_tcg_sat?query=ent_brand_dpl_pokemon_tcg_sat&brand=POKEMON&marketplace=SATURN&page=2
+  link_pattern: /de/product/
+  use_browser: true
+- name: Naver 포켓몬
+  shop: m.brand.naver.com
+  url: https://m.brand.naver.com/pokemon/category/7d4ef8ffe7ca4427b42a1a61751656e4
+  use_browser: true
