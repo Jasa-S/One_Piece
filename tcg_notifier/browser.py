@@ -25,48 +25,22 @@ _browser_instance = None
 _NAVER_QUEUE_RETRIES = 4
 _NAVER_QUEUE_RETRY_DELAY = 8
 
-# ---------------------------------------------------------------------------
-# Borlabs Cookie — localStorage injection
-# ---------------------------------------------------------------------------
-
-_BORLABS_PAYLOAD = json.dumps({
-    "consents": {
-        "statistics": True,
-        "marketing": True,
-        "preferences": True,
-        "essential": True,
-    },
-    "domainPath": "/",
-    "expiry": 365,
-    "uid": "borlabs-bypass",
-    "version": "3",
-})
-
-# Init script that pre-sets the Borlabs consent key before any page JS runs.
-# This runs automatically on every navigation in contexts where it is added.
-_BORLABS_INIT_SCRIPT = f"""
-(function() {{
-    try {{
-        localStorage.setItem('borlabs-cookie', {json.dumps(_BORLABS_PAYLOAD)});
-    }} catch(e) {{}}
-}})();
-"""
-
-
-def _is_borlabs_site(url: str) -> bool:
-    host = urlsplit(url).netloc.lower()
-    return "gate-to-the-games.de" in host
-
 
 # ---------------------------------------------------------------------------
 # Generic cookie consent click-through
 # ---------------------------------------------------------------------------
+
+# Usercentrics (used by gate-to-the-games.de) renders its accept button
+# asynchronously — we wait explicitly for it before falling through to the
+# broader selector/text loop.
+_UC_ACCEPT_SELECTOR = "button[data-testid='uc-accept-all-button']"
+_UC_WAIT_MS = 4_000  # max ms to wait for the UC button to appear
+
 _CONSENT_SELECTORS = [
     "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
     "button#CybotCookiebotDialogBodyButtonAccept",
     "#onetrust-accept-btn-handler",
     "button.onetrust-close-btn-handler",
-    "button[data-testid='uc-accept-all-button']",
     "button[class*='accept-all']",
     "button[class*='acceptAll']",
     "button[class*='cookie-accept']",
@@ -90,6 +64,21 @@ _CONSENT_BUTTON_TEXTS = [
 
 
 def _dismiss_consent(page) -> None:
+    # 1. Usercentrics: wait up to _UC_WAIT_MS for its async accept button,
+    #    then click it. This handles gate-to-the-games.de and any other shop
+    #    running Usercentrics.
+    try:
+        page.wait_for_selector(_UC_ACCEPT_SELECTOR, timeout=_UC_WAIT_MS)
+        el = page.query_selector(_UC_ACCEPT_SELECTOR)
+        if el and el.is_visible():
+            el.click(timeout=3_000)
+            log.debug("Usercentrics consent dismissed")
+            page.wait_for_timeout(800)
+            return
+    except Exception:
+        pass  # UC not present on this page — fall through
+
+    # 2. Other CMP selectors (Cookiebot, OneTrust, etc.)
     for sel in _CONSENT_SELECTORS:
         try:
             el = page.query_selector(sel)
@@ -100,6 +89,8 @@ def _dismiss_consent(page) -> None:
                 return
         except Exception:
             pass
+
+    # 3. Text-based fallback for unlabelled accept buttons
     for text in _CONSENT_BUTTON_TEXTS:
         try:
             btn = page.get_by_role("button", name=re.compile(re.escape(text), re.IGNORECASE)).first
@@ -184,12 +175,6 @@ def _browser_page(url: str) -> Generator:
     page.add_init_script(
         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
     )
-    # Pre-inject Borlabs consent for gate-to-the-games.de so the cookie banner
-    # never blocks the product page content. The init script runs before any
-    # page JS, so the consent flag is already set when the shop reads it.
-    if _is_borlabs_site(url):
-        page.add_init_script(_BORLABS_INIT_SCRIPT)
-        log.debug("Borlabs consent init script added for %s", url)
     try:
         yield page
     finally:
@@ -207,29 +192,21 @@ def _browser_page(url: str) -> Generator:
 # brand.naver.com — combined __NEXT_DATA__ + body-text check
 # ---------------------------------------------------------------------------
 
-# In-stock phrases: checked FIRST because a live buy/cart button is the most
-# reliable signal. These only appear when the product is actually purchasable.
 _BRAND_NAVER_IN_STOCK_PHRASES = [
     "\uad6c\ub9e4\ud558\uae30",   # 구매하기  (Buy now)
     "\uc7a5\ubc14\uad6c\ub2c8",   # 장바구니 (Add to cart)
 ]
 
-# OOS phrases: 품절 can appear in navigation/filter links on in-stock pages
-# (e.g. "품절 상품 보기"), so we only treat it as OOS when the in-stock
-# phrases are absent AND it appears as a standalone token (surrounded by
-# whitespace / line boundaries / punctuation).
 _BRAND_NAVER_OOS_PHRASES_EXACT = [
-    "\ud488\uc808\ub418\uc5c8\uc2b5\ub2c8\ub2e4",  # 품절되었습니다 (It is sold out) — always conclusive
-    "\uc77c\uc2dc\ud488\uc808",                      # 일시품절 (Temporarily out of stock)
+    "\ud488\uc808\ub418\uc5c8\uc2b5\ub2c8\ub2e4",  # 품절되었습니다
+    "\uc77c\uc2dc\ud488\uc808",                      # 일시품절
 ]
-# 품절 alone needs a word-boundary check (Korean has no \b, use surrounding chars)
 _BRAND_NAVER_OOS_STANDALONE = re.compile(
     r"(?<![\uAC00-\uD7A3\w])\ud488\uc808(?![\uAC00-\uD7A3\w])"
 )
 
 
 def _fetch_next_data(page, url: str) -> str | None:
-    """Navigate to url, wait for networkidle, return #__NEXT_DATA__ text or None."""
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=20_000)
     except Exception:
@@ -245,16 +222,6 @@ def _fetch_next_data(page, url: str) -> str | None:
 
 
 def _check_naver_brand(page, product: Product) -> tuple[bool | None, str]:
-    """Stock check for brand.naver.com.
-
-    Order of precedence:
-    1. __NEXT_DATA__ soldOut=true  → definitively OOS, return immediately.
-    2. Body in-stock phrases (구매하기 / 장바구니)  → definitively IN STOCK, return immediately.
-       Checked before OOS phrases because a live buy button is unambiguous.
-    3. Body OOS phrases (품절되었습니다 / 일시품절 / standalone 품절)  → OOS.
-    4. __NEXT_DATA__ soldOut=false  → IN STOCK (already logged in step 1).
-    5. Assumed in stock (no evidence of OOS found on a real product page).
-    """
     next_data_raw: str | None = _fetch_next_data(page, product.url)
 
     attempt = 0
@@ -267,7 +234,6 @@ def _check_naver_brand(page, product: Product) -> tuple[bool | None, str]:
         time.sleep(_NAVER_QUEUE_RETRY_DELAY)
         next_data_raw = _fetch_next_data(page, product.url)
 
-    # Step 1: __NEXT_DATA__ soldOut=true is conclusive — return immediately.
     next_data_sold_out: bool | None = None
     if next_data_raw:
         if attempt:
@@ -285,32 +251,25 @@ def _check_naver_brand(page, product: Product) -> tuple[bool | None, str]:
             _NAVER_QUEUE_RETRIES, product.url,
         )
 
-    # Read body text once for all subsequent checks.
     body_text = ""
     try:
         body_text = page.inner_text("body")
     except Exception as exc:
         log.debug("brand.naver: body text read failed: %s", exc)
 
-    # Step 2: In-stock phrases — checked BEFORE OOS phrases.
-    # A visible buy/cart button is unambiguous; 품절 can appear in filter/nav links.
     for phrase in _BRAND_NAVER_IN_STOCK_PHRASES:
         if phrase in body_text:
             return True, f"body in-stock phrase: {phrase!r}"
 
-    # Step 3: OOS phrases.
     for phrase in _BRAND_NAVER_OOS_PHRASES_EXACT:
         if phrase in body_text:
             return False, f"body OOS phrase: {phrase!r}"
     if _BRAND_NAVER_OOS_STANDALONE.search(body_text):
         return False, "body standalone 품절 matched"
 
-    # Step 4: __NEXT_DATA__ soldOut=false — structured data confirms in stock.
     if next_data_sold_out is False:
         return True, "__NEXT_DATA__ soldOut=false"
 
-    # Step 5: No OOS evidence found on what appears to be a real product page.
-    # Default to in-stock rather than out-of-stock to avoid false OOS alerts.
     log.debug(
         "brand.naver: no conclusive stock signal for %s — defaulting to in-stock",
         product.url,
@@ -319,7 +278,6 @@ def _check_naver_brand(page, product: Product) -> tuple[bool | None, str]:
 
 
 def _extract_sold_out_targeted(data: dict) -> bool | None:
-    """Walk __NEXT_DATA__ using known paths only."""
     try:
         page_props = (data.get("props") or {}).get("pageProps") or {}
 
@@ -407,16 +365,6 @@ _NAVER_IN_STOCK_SELECTORS = [
 
 
 def _check_naver(page, product: Product) -> tuple[bool | None, str]:
-    """Naver Smartstore-specific stock check.
-
-    Order of precedence:
-    1. OOS CSS selectors — conclusive if matched.
-    2. In-stock CSS selectors — conclusive if matched.
-    3. Body text OOS / in-stock phrases.
-    4. JSON-LD structured data.
-    5. __NEXT_DATA__ soldOut field — structured fallback.
-    6. Default to in-stock (no OOS evidence found).
-    """
     try:
         page.wait_for_load_state("networkidle", timeout=15_000)
     except Exception:
@@ -466,7 +414,6 @@ def _check_naver(page, product: Product) -> tuple[bool | None, str]:
     except Exception:
         pass
 
-    # Structured fallback: try __NEXT_DATA__ (same approach as brand.naver.com).
     try:
         next_data_raw = page.eval_on_selector("#__NEXT_DATA__", "el => el.textContent")
         if next_data_raw:
@@ -479,8 +426,6 @@ def _check_naver(page, product: Product) -> tuple[bool | None, str]:
     except Exception:
         pass
 
-    # No OOS evidence found — default to in-stock to avoid false OOS alerts.
-    # This is consistent with the brand.naver.com fallback behaviour.
     log.debug(
         "Naver smartstore: no conclusive stock signal for %s — defaulting to in-stock",
         product.url,
@@ -493,13 +438,17 @@ def _check_naver(page, product: Product) -> tuple[bool | None, str]:
 # ---------------------------------------------------------------------------
 
 def _navigate_with_consent(page, url: str) -> None:
-    # Note: Borlabs consent for gate-to-the-games.de is handled via an init
-    # script added in _browser_page(), so no prior navigation is needed here.
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=20_000)
     except Exception:
         log.warning("domcontentloaded timed out for %s, using partial content", url)
     _dismiss_consent(page)
+    # After dismissing the consent overlay, wait briefly for the real page
+    # content (add-to-cart button, stock badge) to render.
+    try:
+        page.wait_for_load_state("networkidle", timeout=8_000)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -584,8 +533,6 @@ def check_product_browser(product: Product) -> tuple[bool | None, str]:
                 return False, f"oos phrase matched: {found_oos!r}"
 
             # No phrase matched — default to in-stock to avoid false OOS alerts.
-            # If the consent banner blocked the page content, we'd rather not
-            # send a false "sold out" notification.
             log.debug(
                 "Generic: no phrase matched for %s — defaulting to in-stock",
                 product.url,

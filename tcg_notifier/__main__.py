@@ -43,7 +43,6 @@ def _check_products(config: Config, state: State) -> None:
                 continue
 
             if result is None:
-                # Unknown result: increment streak; expires cached state after threshold
                 log.warning("Skipping %s — all retries exhausted.", product.name)
                 state.record_product_unknown(product.url)
                 continue
@@ -139,7 +138,6 @@ def _check_categories(config: Config, state: State) -> None:
 
             for url, result in stock_results.items():
                 if result is None:
-                    # Unknown: increment streak; expires cached state after threshold
                     state.record_category_url_unknown(category.url, url)
                     continue
                 title = current.get(url, url)
@@ -194,6 +192,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--test", action="store_true")
     parser.add_argument("--verbose", "-v", action="store_true")
+    parser.add_argument(
+        "--reset-url",
+        metavar="URL",
+        help="Clear the cached stock state for a product URL so the next "
+             "run treats it as unseen (useful after fixing a false sold-out).",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -203,6 +207,27 @@ def main(argv: list[str] | None = None) -> int:
 
     config_path = Path(args.config)
     state_path = Path(args.state)
+
+    # --reset-url: wipe the cached entry so the next run re-checks from scratch
+    if args.reset_url:
+        if not state_path.exists():
+            log.error("State file not found at %s.", state_path)
+            return 1
+        state = State(state_path)
+        url = args.reset_url
+        products = state._data.get("products", {})
+        if url in products:
+            del products[url]
+            state._dirty = True
+            state.save()
+            log.info("Cleared cached state for: %s", url)
+        else:
+            log.warning("URL not found in state: %s", url)
+            log.info("Known product URLs in state:")
+            for u in sorted(products):
+                log.info("  %s", u)
+        return 0
+
     if not config_path.exists():
         log.error("Config not found at %s.", config_path)
         return 1
